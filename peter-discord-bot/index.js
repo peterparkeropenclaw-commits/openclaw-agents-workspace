@@ -12,6 +12,15 @@ const client = new Client({
 
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const BRANDON_USERNAME = process.env.BRANDON_USERNAME;
+const PETER_ALLOWED_CHANNEL = '1482399843627438131';
+
+function isAllowedChannel(channelId) {
+  if (channelId !== PETER_ALLOWED_CHANNEL) {
+    console.log(`[Peter] Silently dropping message to unauthorised channel: ${channelId}`);
+    return false;
+  }
+  return true;
+}
 
 // Route message to Peter (main agent) via OpenClaw CLI
 // Uses github-copilot/claude-sonnet-4.6 — free tier, no token expiry
@@ -30,6 +39,8 @@ function askPeter(userMessage, callback) {
 }
 
 async function sendToChannel(message) {
+  if (!isAllowedChannel(CHANNEL_ID)) return;
+
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
     const chunks = message.match(/[\s\S]{1,1900}/g) || [message];
@@ -47,6 +58,7 @@ client.once('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+  if (!isAllowedChannel(message.channelId)) return;
   if (message.channelId !== CHANNEL_ID) return;
   if (message.author.bot) return;
   if (message.author.username !== BRANDON_USERNAME) return;
@@ -59,6 +71,8 @@ client.on('messageCreate', async (message) => {
   await message.channel.sendTyping();
 
   askPeter(`[Discord #peter] ${message.author.username}: ${userMsg}`, async (reply, err) => {
+    if (!isAllowedChannel(message.channelId)) return;
+
     if (err || !reply) {
       await message.channel.send('❌ Peter error: ' + (err || 'empty response'));
       return;
