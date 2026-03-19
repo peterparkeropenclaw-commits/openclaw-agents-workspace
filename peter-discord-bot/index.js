@@ -28,11 +28,44 @@ function isAllowedChannel(channelId) {
 }
 
 function askPeter(userMessage, callback) {
-  const { execFile } = require('child_process');
-  execFile('/opt/homebrew/bin/openclaw', ['agent', '--agent', 'main', '--message', userMessage], { timeout: 180000 }, (error, stdout, stderr) => {
-    if (error) { callback(null, error.message); return; }
-    callback((stdout || stderr || '').trim(), null);
+  // Use OpenClaw Gateway sessions_send directly — avoids CLI hanging issue
+  const body = JSON.stringify({
+    sessionKey: 'agent:main:discord:channel:1482399843627438131',
+    message: userMessage,
+    timeoutSeconds: 120,
   });
+
+  const options = {
+    hostname: GATEWAY_HOST,
+    port: GATEWAY_PORT,
+    path: '/sessions/send',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      ...(GATEWAY_TOKEN ? { 'Authorization': `Bearer ${GATEWAY_TOKEN}` } : {}),
+    },
+  };
+
+  const req = http.request(options, (res) => {
+    let data = '';
+    res.on('data', chunk => data += chunk);
+    res.on('end', () => {
+      try {
+        const parsed = JSON.parse(data);
+        // Gateway returns { reply: "..." } or { message: "..." }
+        const reply = parsed.reply || parsed.message || parsed.text || data;
+        callback(reply, null);
+      } catch (e) {
+        callback(data || null, null);
+      }
+    });
+  });
+
+  req.on('error', (err) => callback(null, err.message));
+  req.setTimeout(130000, () => { req.destroy(); callback(null, 'Request timed out'); });
+  req.write(body);
+  req.end();
 }
 
 function splitMessage(text, maxLen = 1900) {
