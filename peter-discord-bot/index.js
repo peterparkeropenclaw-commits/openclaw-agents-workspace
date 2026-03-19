@@ -1,4 +1,5 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 const { Client, GatewayIntentBits } = require('discord.js');
 const http = require('http');
 
@@ -12,7 +13,11 @@ const client = new Client({
 
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const BRANDON_USERNAME = process.env.BRANDON_USERNAME;
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const PETER_ALLOWED_CHANNEL = '1482399843627438131';
+const GATEWAY_HOST = process.env.OPENCLAW_GATEWAY_HOST || '127.0.0.1';
+const GATEWAY_PORT = Number(process.env.OPENCLAW_GATEWAY_PORT || 18789);
+const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 
 function isAllowedChannel(channelId) {
   if (channelId !== PETER_ALLOWED_CHANNEL) {
@@ -32,15 +37,18 @@ function askPeter(userMessage, callback) {
     }
   });
 
+  const headers = {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body)
+  };
+  if (GATEWAY_TOKEN) headers.Authorization = `Bearer ${GATEWAY_TOKEN}`;
+
   const options = {
-    hostname: '127.0.0.1',
-    port: 18789,
+    hostname: GATEWAY_HOST,
+    port: GATEWAY_PORT,
     path: '/tools/invoke',
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
-    }
+    headers
   };
 
   const req = http.request(options, (res) => {
@@ -85,7 +93,7 @@ async function sendToChannel(message) {
 client.once('clientReady', async () => {
   console.log('Peter bot online as ' + client.user.tag);
   console.log('Listening in #peter channel: ' + CHANNEL_ID);
-  console.log('Model: github-copilot/claude-sonnet-4.6 via OpenClaw CLI (free tier)');
+  console.log('Model dispatch: OpenClaw Gateway /tools/invoke -> sessions_send');
   await sendToChannel('Peter online — ready for strategic discussion 🧠');
 });
 
@@ -116,4 +124,9 @@ client.on('messageCreate', async (message) => {
   });
 });
 
-client.login(process.env.BOT_TOKEN);
+if (!BOT_TOKEN || !/^\S+\.\S+\.\S+$/.test(BOT_TOKEN)) {
+  console.error('Peter bot misconfigured: BOT_TOKEN missing/invalid format in peter-discord-bot/.env');
+  process.exit(1);
+}
+
+client.login(BOT_TOKEN);

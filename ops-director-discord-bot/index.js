@@ -11,10 +11,12 @@ function splitMessage(text, maxLen = 1900) {
   return chunks;
 }
 
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 const { Client, GatewayIntentBits } = require('discord.js');
+const http = require('http');
 
-// Agent HTTP dispatch endpoints — NEVER use openclaw CLI for agent dispatch
+// Agent HTTP dispatch endpoints — NEVER use shell CLI dispatch for agent routing
 const AGENT_ENDPOINTS = {
   'researcher': 'http://localhost:3102/deliver',
   'analyst': 'http://localhost:3104/deliver',
@@ -41,9 +43,8 @@ const CHANNELS = {
   leads: process.env.LEADS_CHANNEL,
   research: process.env.RESEARCH_CHANNEL,
   approvals: process.env.APPROVALS_CHANNEL,
-  missionControl: process.env.MISSION_CONTROL_CHANNEL,
-  alerts: process.env.ALERTS_CHANNEL,
-  missionControl: process.env.CHANNEL_ID,
+  missionControl: process.env.MISSION_CONTROL_CHANNEL || process.env.CHANNEL_ID,
+  alerts: process.env.ALERTS_CHANNEL || process.env.CHANNEL_ID,
   competitors: '1482436579933814836', // hardcoded
   marketIntel: '1482436579933814836', // hardcoded
   socialDrafts: '1482474058301047076' // hardcoded
@@ -185,7 +186,7 @@ function askOpsDirector(userMessage, callback) {
     }
   };
 
-  const req = require('http').request(options, (res) => {
+  const req = http.request(options, (res) => {
     let data = '';
     res.on('data', (chunk) => { data += chunk; });
     res.on('end', () => {
@@ -207,7 +208,7 @@ function askOpsDirector(userMessage, callback) {
 
 client.once('clientReady', () => {
   console.log('Ops Director bot online as ' + client.user.tag);
-  console.log('Model: github-copilot/gpt-4.1 via OpenClaw CLI (free tier)');
+  console.log('Model dispatch: OpenClaw Gateway /tools/invoke -> sessions_send');
   console.log('Channel routing: Researcher/Deep Researcher → #research | Analyst/Commercial Director → #leads | Community Manager → #approvals');
   sendToChannel('missionControl', '🦞 **Ops Director online** — OpenAI GPT-5.4, all channels active.');
 });
@@ -227,7 +228,7 @@ client.on('messageCreate', async (message) => {
   askOpsDirector(`[${message.author.username}]: ${userMsg}`, async (reply, err) => {
     if (err || !reply) {
       await message.channel.send('❌ Ops Director error: ' + (err || 'empty response'));
-      sendToChannel('alerts', '❌ **Ops Director CLI error:** ' + (err || 'empty response'));
+      sendToChannel('alerts', '❌ **Ops Director gateway error:** ' + (err || 'empty response'));
       return;
     }
 
@@ -245,34 +246,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // Minimal HTTP server for health checks and test-channel endpoint
-const http = require('http');
 const httpServer = http.createServer((req, res) => {
-
-  // DELIVERY ENDPOINT — agents POST here on task completion
-  if (req.method === 'POST' && req.url === '/deliver') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const { channelKey, content, agentId } = JSON.parse(body);
-        if (!channelKey || !content) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'channelKey and content required' }));
-          return;
-        }
-        console.log('[deliver] Received output from agent:', agentId, '→ channel:', channelKey);
-        const chunks1 = splitMessage(content);
-        for (const chunk of chunks1) await sendToChannel(channelKey, chunk);
-        // missionControl echo removed
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
 
   if (req.method === 'POST' && req.url === '/deliver') {
     let body = '';
@@ -290,7 +264,7 @@ const httpServer = http.createServer((req, res) => {
         if (agentId === 'Coder' && channelKey === 'coder') {
           console.log('[auto-qa] Coder delivery detected — triggering QA review');
           const qaPayload = JSON.stringify({ task: 'Review latest Coder output posted in #coder. Check the feature branch, build status and preview URL mentioned. Post APPROVED or REJECTED.', channelKey: 'coder', channelId: process.env.CODER_CHANNEL });
-          const qaReq = require('http').request({ hostname: 'localhost', port: 3107, path: '/deliver', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(qaPayload) } }, () => console.log('[auto-qa] QA Agent triggered'));
+          const qaReq = http.request({ hostname: 'localhost', port: 3107, path: '/deliver', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(qaPayload) } }, () => console.log('[auto-qa] QA Agent triggered'));
           qaReq.write(qaPayload);
           qaReq.end();
         }
@@ -343,5 +317,10 @@ const httpServer = http.createServer((req, res) => {
 httpServer.listen(3001, () => {
   console.log('[HTTP] Test server listening on port 3001');
 });
+
+if (!process.env.BOT_TOKEN || !/^\S+\.\S+\.\S+$/.test(process.env.BOT_TOKEN)) {
+  console.error('Ops Director bot misconfigured: BOT_TOKEN missing/invalid format in ops-director-discord-bot/.env');
+  process.exit(1);
+}
 
 client.login(process.env.BOT_TOKEN);
