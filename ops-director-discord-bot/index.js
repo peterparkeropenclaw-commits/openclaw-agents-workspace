@@ -1,7 +1,18 @@
-const fs = require('fs');
+function splitMessage(text, maxLen = 1900) {
+  const chunks = [];
+  let t = text;
+  while (t.length > maxLen) {
+    let split = t.lastIndexOf('\n', maxLen);
+    if (split === -1) split = maxLen;
+    chunks.push(t.slice(0, split));
+    t = t.slice(split).trimStart();
+  }
+  chunks.push(t);
+  return chunks;
+}
+
 require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
-const { exec } = require('child_process');
 
 // Agent HTTP dispatch endpoints — NEVER use openclaw CLI for agent dispatch
 const AGENT_ENDPOINTS = {
@@ -32,8 +43,9 @@ const CHANNELS = {
   approvals: process.env.APPROVALS_CHANNEL,
   missionControl: process.env.MISSION_CONTROL_CHANNEL,
   alerts: process.env.ALERTS_CHANNEL,
-  competitors: '1482473947814694973', // hardcoded
-  marketIntel: '1482474140207419412', // hardcoded
+  missionControl: process.env.CHANNEL_ID,
+  competitors: '1482436579933814836', // hardcoded
+  marketIntel: '1482436579933814836', // hardcoded
   socialDrafts: '1482474058301047076' // hardcoded
 };
 
@@ -108,7 +120,7 @@ function dispatchToAgent(agentName, task) {
     return;
   }
 
-  sendToChannel('missionControl', '🔄 **Dispatching to ' + agentName + '** via HTTP endpoint');
+  sendToChannel('ops', '🔄 **Dispatching to ' + agentName + '** via HTTP endpoint');
 
   const channelId = CHANNELS[channelKey] || CHANNELS["missionControl"];
   const payload = JSON.stringify({ task, channelKey, channelId });
@@ -152,28 +164,52 @@ function parseAllDispatches(response) {
   return dispatches;
 }
 
-// Route ALL Ops Director conversation through OpenClaw CLI
-// Uses github-copilot/gpt-4.1 — free, no token expiry issues
 function askOpsDirector(userMessage, callback) {
-  const tmpFile = '/tmp/ops-message-' + Date.now() + '.txt';
-  fs.writeFileSync(tmpFile, userMessage);
-  const cmd = '/opt/homebrew/bin/openclaw agent --agent ops --message "$(cat ' + tmpFile + ')"';
-
-  exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
-    if (error) {
-      callback(null, error.message);
-      return;
+  const body = JSON.stringify({
+    tool: 'sessions_send',
+    args: {
+      sessionKey: 'agent:ops:discord:channel:' + process.env.CHANNEL_ID,
+      message: userMessage,
+      timeoutSeconds: 120
     }
-    const response = (stdout || stderr || '').trim();
-    callback(response, null);
   });
+
+  const options = {
+    hostname: '127.0.0.1',
+    port: 18789,
+    path: '/tools/invoke',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
+
+  const req = require('http').request(options, (res) => {
+    let data = '';
+    res.on('data', (chunk) => { data += chunk; });
+    res.on('end', () => {
+      try {
+        const parsed = JSON.parse(data);
+        const reply = parsed.result || parsed.output || parsed.message || JSON.stringify(parsed);
+        callback(reply, null);
+      } catch (e) {
+        callback(data.trim() || null, null);
+      }
+    });
+  });
+
+  req.on('error', (err) => { callback(null, err.message); });
+  req.setTimeout(130000, () => { req.destroy(); callback(null, 'Request timed out'); });
+  req.write(body);
+  req.end();
 }
 
 client.once('clientReady', () => {
   console.log('Ops Director bot online as ' + client.user.tag);
   console.log('Model: github-copilot/gpt-4.1 via OpenClaw CLI (free tier)');
   console.log('Channel routing: Researcher/Deep Researcher → #research | Analyst/Commercial Director → #leads | Community Manager → #approvals');
-  sendToChannel('missionControl', '🦞 **Ops Director online** — GitHub Copilot GPT-5-mini, all channels active.');
+  sendToChannel('missionControl', '🦞 **Ops Director online** — OpenAI GPT-5.4, all channels active.');
 });
 
 client.on('messageCreate', async (message) => {
@@ -225,7 +261,8 @@ const httpServer = http.createServer((req, res) => {
           return;
         }
         console.log('[deliver] Received output from agent:', agentId, '→ channel:', channelKey);
-        await sendToChannel(channelKey, content);
+        const chunks1 = splitMessage(content);
+        for (const chunk of chunks1) await sendToChannel(channelKey, chunk);
         // missionControl echo removed
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -250,7 +287,15 @@ const httpServer = http.createServer((req, res) => {
           return;
         }
         console.log('[deliver] ' + agentId + ' → #' + channelKey);
-        await sendToChannel(channelKey, '📥 **' + agentId + ' output:**\n' + content);
+        if (agentId === 'Coder' && channelKey === 'coder') {
+          console.log('[auto-qa] Coder delivery detected — triggering QA review');
+          const qaPayload = JSON.stringify({ task: 'Review latest Coder output posted in #coder. Check the feature branch, build status and preview URL mentioned. Post APPROVED or REJECTED.', channelKey: 'coder', channelId: process.env.CODER_CHANNEL });
+          const qaReq = require('http').request({ hostname: 'localhost', port: 3107, path: '/deliver', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(qaPayload) } }, () => console.log('[auto-qa] QA Agent triggered'));
+          qaReq.write(qaPayload);
+          qaReq.end();
+        }
+        const msgChunks = splitMessage('📥 **' + agentId + ' output:**\n' + content);
+        for (const chunk of msgChunks) await sendToChannel(channelKey, chunk);
         // missionControl echo removed
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
