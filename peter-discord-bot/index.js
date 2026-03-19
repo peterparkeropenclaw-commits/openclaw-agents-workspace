@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
-const { exec } = require('child_process');
+const http = require('http');
 
 const client = new Client({
   intents: [
@@ -22,20 +22,52 @@ function isAllowedChannel(channelId) {
   return true;
 }
 
-// Route message to Peter (main agent) via OpenClaw CLI
-// Uses github-copilot/claude-sonnet-4.6 — free tier, no token expiry
 function askPeter(userMessage, callback) {
-  const safeMessage = userMessage.replace(/"/g, '\\"').replace(/\n/g, ' ');
-  const cmd = '/opt/homebrew/bin/openclaw agent --agent main --message "' + safeMessage + '"';
-
-  exec(cmd, { timeout: 180000 }, (error, stdout, stderr) => {
-    if (error) {
-      callback(null, error.message);
-      return;
+  const body = JSON.stringify({
+    tool: 'sessions_send',
+    args: {
+      sessionKey: 'agent:main:discord:channel:1482399843627438131',
+      message: userMessage,
+      timeoutSeconds: 120
     }
-    const response = (stdout || stderr || '').trim();
-    callback(response, null);
   });
+
+  const options = {
+    hostname: '127.0.0.1',
+    port: 18789,
+    path: '/tools/invoke',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
+
+  const req = http.request(options, (res) => {
+    let data = '';
+    res.on('data', (chunk) => { data += chunk; });
+    res.on('end', () => {
+      try {
+        const parsed = JSON.parse(data);
+        const reply = parsed.result || parsed.output || parsed.message || JSON.stringify(parsed);
+        callback(reply, null);
+      } catch (e) {
+        callback(data.trim() || null, null);
+      }
+    });
+  });
+
+  req.on('error', (err) => {
+    callback(null, err.message);
+  });
+
+  req.setTimeout(130000, () => {
+    req.destroy();
+    callback(null, 'Request timed out');
+  });
+
+  req.write(body);
+  req.end();
 }
 
 async function sendToChannel(message) {
@@ -58,6 +90,7 @@ client.once('clientReady', async () => {
 });
 
 client.on('messageCreate', async (message) => {
+  if (message.channelId !== PETER_ALLOWED_CHANNEL) return;
   if (!isAllowedChannel(message.channelId)) return;
   if (message.channelId !== CHANNEL_ID) return;
   if (message.author.bot) return;
@@ -74,12 +107,12 @@ client.on('messageCreate', async (message) => {
     if (!isAllowedChannel(message.channelId)) return;
 
     if (err || !reply) {
-      await message.channel.send('❌ Peter error: ' + (err || 'empty response'));
+      if (isAllowedChannel(message.channelId)) { await message.channel.send('❌ Peter error: ' + (err || 'empty response')); }
       return;
     }
 
     const chunks = reply.match(/[\s\S]{1,1900}/g) || [reply];
-    for (const chunk of chunks) await message.channel.send(chunk);
+    if (isAllowedChannel(message.channelId)) { for (const chunk of chunks) await message.channel.send(chunk); }
   });
 });
 
