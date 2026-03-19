@@ -28,54 +28,29 @@ function isAllowedChannel(channelId) {
 }
 
 function askPeter(userMessage, callback) {
-  const body = JSON.stringify({
-    tool: 'sessions_send',
-    args: {
-      sessionKey: 'agent:main:discord:channel:1482399843627438131',
-      message: userMessage,
-      timeoutSeconds: 120
-    }
+  const { execFile } = require('child_process');
+  execFile('/opt/homebrew/bin/openclaw', ['agent', '--agent', 'main', '--message', userMessage], { timeout: 180000 }, (error, stdout, stderr) => {
+    if (error) { callback(null, error.message); return; }
+    callback((stdout || stderr || '').trim(), null);
   });
+}
 
-  const headers = {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(body)
-  };
-  if (GATEWAY_TOKEN) headers.Authorization = `Bearer ${GATEWAY_TOKEN}`;
+function splitMessage(text, maxLen = 1900) {
+  const chunks = [];
+  let t = String(text || '');
+  while (t.length > maxLen) {
+    let split = t.lastIndexOf('\n', maxLen);
+    if (split === -1) split = maxLen;
+    chunks.push(t.slice(0, split));
+    t = t.slice(split).trimStart();
+  }
+  chunks.push(t);
+  return chunks.filter(Boolean);
+}
 
-  const options = {
-    hostname: GATEWAY_HOST,
-    port: GATEWAY_PORT,
-    path: '/tools/invoke',
-    method: 'POST',
-    headers
-  };
-
-  const req = http.request(options, (res) => {
-    let data = '';
-    res.on('data', (chunk) => { data += chunk; });
-    res.on('end', () => {
-      try {
-        const parsed = JSON.parse(data);
-        const reply = parsed.result || parsed.output || parsed.message || JSON.stringify(parsed);
-        callback(reply, null);
-      } catch (e) {
-        callback(data.trim() || null, null);
-      }
-    });
-  });
-
-  req.on('error', (err) => {
-    callback(null, err.message);
-  });
-
-  req.setTimeout(130000, () => {
-    req.destroy();
-    callback(null, 'Request timed out');
-  });
-
-  req.write(body);
-  req.end();
+async function sendDiscordChunks(channel, text) {
+  const chunks = splitMessage(text, 1900);
+  for (const chunk of chunks) await channel.send(chunk);
 }
 
 async function sendToChannel(message) {
@@ -83,8 +58,7 @@ async function sendToChannel(message) {
 
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
-    const chunks = message.match(/[\s\S]{1,1900}/g) || [message];
-    for (const chunk of chunks) await channel.send(chunk);
+    await sendDiscordChunks(channel, message);
   } catch (err) {
     console.error('sendToChannel error:', err.message);
   }
@@ -119,8 +93,9 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    const chunks = reply.match(/[\s\S]{1,1900}/g) || [reply];
-    if (isAllowedChannel(message.channelId)) { for (const chunk of chunks) await message.channel.send(chunk); }
+    if (isAllowedChannel(message.channelId)) {
+      await sendDiscordChunks(message.channel, reply);
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 function splitMessage(text, maxLen = 1900) {
   const chunks = [];
-  let t = text;
+  let t = String(text || '');
   while (t.length > maxLen) {
     let split = t.lastIndexOf('\n', maxLen);
     if (split === -1) split = maxLen;
@@ -8,7 +8,12 @@ function splitMessage(text, maxLen = 1900) {
     t = t.slice(split).trimStart();
   }
   chunks.push(t);
-  return chunks;
+  return chunks.filter(Boolean);
+}
+
+async function sendDiscordChunks(channel, text) {
+  const chunks = splitMessage(text, 1900);
+  for (const chunk of chunks) await channel.send(chunk);
 }
 
 const path = require('path');
@@ -96,8 +101,7 @@ async function sendToChannel(channelKey, message) {
       console.error(`[sendToChannel] ERROR: Could not fetch channel ${channelId} (key: ${channelKey})`);
       return;
     }
-    const chunks = message.match(/([\s\S]{1,1900})/g) || [message];
-    for (const chunk of chunks) await channel.send(chunk);
+    await sendDiscordChunks(channel, message);
     console.log(`[sendToChannel] SUCCESS: Sent to #${channelKey} (${channelId})`);
   } catch (err) {
     console.error(`[sendToChannel] FAILED for channel key "${channelKey}": ${err.message}`);
@@ -235,8 +239,7 @@ client.on('messageCreate', async (message) => {
     // Strip dispatch blocks from visible reply
     const visibleReply = reply.replace(/DISPATCH>>[\s\S]*?<<END/g, '').trim();
     if (visibleReply) {
-      const chunks = visibleReply.match(/([\s\S]{1,1900})/g) || [visibleReply];
-      for (const chunk of chunks) await message.channel.send(chunk);
+      await sendDiscordChunks(message.channel, visibleReply);
     }
 
     // Fire ALL dispatch blocks simultaneously
@@ -295,7 +298,7 @@ const httpServer = http.createServer((req, res) => {
         }
         try {
           const channel = await client.channels.fetch(channelId);
-          await channel.send(message);
+          await sendDiscordChunks(channel, message);
           console.log(`[test-channel] SUCCESS: Sent to channelId ${channelId}`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, channelId }));
