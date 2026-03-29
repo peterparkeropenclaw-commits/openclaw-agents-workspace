@@ -57,7 +57,6 @@ async function sendTelegram(message) {
         body: JSON.stringify({
           chat_id: BRANDON_CHAT_ID,
           text: message,
-          parse_mode: 'Markdown',
         }),
       }
     );
