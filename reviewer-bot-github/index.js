@@ -287,14 +287,11 @@ const server = http.createServer(async (req, res) => {
       console.error('[reviewer-bot] review failed:', err.message);
       log({ type: 'error', owner, repo, prNumber, error: err.message });
 
-      if (attempt === 1) {
-        console.log('[reviewer-bot] retrying...');
-        setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).catch(e => {
-          notifyPeter(`⚠️ Reviewer bot FAILED on PR #${prNumber} (${owner}/${repo})\nError: ${e.message}\nManual review needed.\nhttps://github.com/${owner}/${repo}/pull/${prNumber}`);
-        }), 5000);
-      } else {
-        notifyPeter(`⚠️ Reviewer bot FAILED on PR #${prNumber} (${owner}/${repo})\nError: ${err.message}\nManual review needed.\nhttps://github.com/${owner}/${repo}/pull/${prNumber}`);
-      }
+      console.log('[reviewer-bot] retrying once...');
+      setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).catch(e => {
+        console.error('[reviewer-bot] retry failed:', e.message);
+        notifyPeter(`⚠️ Reviewer bot FAILED on PR #${prNumber} (${owner}/${repo})\nError: ${e.message}\nManual review needed.\nhttps://github.com/${owner}/${repo}/pull/${prNumber}`);
+      }), 5000);
     }
   });
 });
