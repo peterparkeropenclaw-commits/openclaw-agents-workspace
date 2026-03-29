@@ -360,7 +360,6 @@ async function runReconciliation() {
           body: JSON.stringify(verdictPayload),
         });
         log({ type: 'reconciliation', action: 'verdict_recovered', taskId: task.id });
-        log({ type: 'reconciliation', action: 'verdict_recovered', taskId: task.id });
       } catch (err) {
         console.error('[reconciliation] verdict recovery failed for task', task.id, ':', err.message);
       }
