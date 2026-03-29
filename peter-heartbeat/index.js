@@ -165,6 +165,7 @@ async function runHeartbeat() {
     };
 
     const cooldowns = loadCooldowns();
+    let cooldownsDirty = false;
 
     for (const task of tasks) {
       const threshold = thresholds[task.state];
@@ -177,17 +178,27 @@ async function runHeartbeat() {
         const lastAlert = cooldowns[cooldownKey];
 
         if (!lastAlert || Date.now() - lastAlert > 30 * 60 * 1000) {
-          await sendTelegram(
-            `⏱ Stale task detected\n` +
-            `Task: ${task.id}\n` +
-            `Title: ${task.title}\n` +
-            `State: ${task.state}\n` +
-            `Last update: ${task.updated_at}`
-          );
+          // Stamp cooldown BEFORE sending to prevent re-alert if sendTelegram throws
           cooldowns[cooldownKey] = Date.now();
-          saveCooldowns(cooldowns);
+          cooldownsDirty = true;
+          try {
+            await sendTelegram(
+              `⏱ Stale task detected\n` +
+              `Task: ${task.id}\n` +
+              `Title: ${task.title}\n` +
+              `State: ${task.state}\n` +
+              `Last update: ${task.updated_at}`
+            );
+          } catch (telegramErr) {
+            console.error('[heartbeat] telegram send error:', telegramErr.message);
+          }
         }
       }
+    }
+
+    // Save once after the full loop — atomic write
+    if (cooldownsDirty) {
+      saveCooldowns(cooldowns);
     }
   } catch (err) {
     console.error('[heartbeat] error:', err.message);
