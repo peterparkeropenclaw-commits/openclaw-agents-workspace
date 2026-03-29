@@ -205,21 +205,7 @@ If CHANGES REQUESTED list each issue with exact file name and line number where 
     summary: reviewText.slice(0, 500),
   };
 
-  try {
-    const cpRes = await fetch(`http://localhost:3210/tasks/OC-${ocTaskId}/verdict`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(verdictPayload),
-    });
-    if (!cpRes.ok) {
-      const errText = await cpRes.text();
-      console.error(`[control-plane] verdict POST failed for OC-${ocTaskId}:`, errText);
-      await sendTelegram(`⚠️ Reviewer Bot could not reach Control Plane for task OC-${ocTaskId}.\nManual state update needed.`);
-    }
-  } catch (err) {
-    console.error('[control-plane] verdict POST error:', err.message);
-    await sendTelegram(`⚠️ Reviewer Bot could not reach Control Plane for task OC-${ocTaskId}.\nManual state update needed.`);
-  }
+  await postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, `${owner}/${repo}`);
 
   if (!approved || needsEscalation) {
     const issues = reviewText.split('\n').filter(l => l.includes('FAIL') || l.startsWith('-')).join('\n');
@@ -239,9 +225,160 @@ function verifySignature(payload, signature) {
   try { return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)); } catch { return false; }
 }
 
+async function postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, repo) {
+  const delays = [0, 5000, 30000, 120000];
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt] > 0) await new Promise(r => setTimeout(r, delays[attempt]));
+    try {
+      const cpRes = await fetch(`http://localhost:3210/tasks/OC-${ocTaskId}/verdict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(verdictPayload),
+      });
+      if (cpRes.ok) return;
+      const errText = await cpRes.text();
+      console.error(`[control-plane] verdict attempt ${attempt + 1} failed for OC-${ocTaskId}:`, errText);
+    } catch (err) {
+      console.error(`[control-plane] verdict attempt ${attempt + 1} error for OC-${ocTaskId}:`, err.message);
+    }
+  }
+  await sendTelegram(`⚠️ CP verdict POST failed for task OC-${ocTaskId} PR #${prNumber}.\nManual state update needed.`);
+}
+
+async function runSmokeTest() {
+  const checks = {
+    process: 'pass',
+    tunnel: 'fail',
+    github: 'fail',
+    openai: 'fail',
+    control_plane: 'fail',
+    secret: WEBHOOK_SECRET ? 'pass' : 'fail',
+  };
+
+  try {
+    const r = await fetch('https://reviewer.ocpipe.live/health', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) checks.tunnel = 'pass';
+  } catch {}
+
+  try {
+    const r = await githubRequest('/user');
+    if (r.login) checks.github = 'pass';
+  } catch {}
+
+  try {
+    const r = await openai.models.list();
+    if (r) checks.openai = 'pass';
+  } catch {}
+
+  try {
+    const r = await fetch('http://localhost:3210/health', { signal: AbortSignal.timeout(3000) });
+    if (r.ok) checks.control_plane = 'pass';
+  } catch {}
+
+  return checks;
+}
+
+async function runReconciliation() {
+  let tasks;
+  try {
+    tasks = await new Promise((resolve, reject) => {
+      http.get('http://localhost:3210/tasks/active', res => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); } catch { reject(new Error('Invalid JSON from /tasks/active')); }
+        });
+      }).on('error', reject);
+    });
+  } catch (err) {
+    console.error('[reconciliation] failed to fetch active tasks:', err.message);
+    return;
+  }
+
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  const pending = (Array.isArray(tasks) ? tasks : []).filter(t =>
+    t.state === 'review_pending' && new Date(t.updated_at).getTime() < tenMinutesAgo
+  );
+
+  for (const task of pending) {
+    let owner, repoName, prNumber;
+    if (task.pr_url) {
+      const m = task.pr_url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+      if (!m) continue;
+      [, owner, repoName, prNumber] = m;
+      prNumber = parseInt(prNumber);
+    } else if (task.pr_number && task.repo) {
+      const parts = task.repo.split('/');
+      if (parts.length !== 2) continue;
+      [owner, repoName] = parts;
+      prNumber = task.pr_number;
+    } else {
+      continue;
+    }
+
+    let reviews;
+    try {
+      reviews = await githubRequest(`/repos/${owner}/${repoName}/pulls/${prNumber}/reviews`);
+    } catch (err) {
+      console.error('[reconciliation] failed to fetch reviews for PR', prNumber, ':', err.message);
+      continue;
+    }
+
+    if (!Array.isArray(reviews)) continue;
+
+    const botReview = reviews.find(r => r.user && r.user.login === 'openclawreviewer-a11y');
+
+    if (!botReview) {
+      try {
+        const prDetails = await githubRequest(`/repos/${owner}/${repoName}/pulls/${prNumber}`);
+        await runReview({
+          owner,
+          repo: repoName,
+          prNumber,
+          title: prDetails.title || '',
+          body: prDetails.body || '',
+        });
+        log({ type: 'reconciliation', action: 'review_triggered', taskId: task.id });
+      } catch (err) {
+        console.error('[reconciliation] review trigger failed for task', task.id, ':', err.message);
+      }
+    } else {
+      const verdict = botReview.state === 'APPROVED' ? 'approved' : 'changes_requested';
+      const verdictPayload = {
+        verdict,
+        actor: 'reconciliation',
+        reviewer: 'openclawreviewer-a11y',
+        repo: `${owner}/${repoName}`,
+        pr_number: prNumber,
+        pr_url: `https://github.com/${owner}/${repoName}/pull/${prNumber}`,
+        summary: '(recovered by reconciliation)',
+      };
+      try {
+        await fetch(`http://localhost:3210/tasks/${task.id}/verdict`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(verdictPayload),
+        });
+        log({ type: 'reconciliation', action: 'verdict_recovered', taskId: task.id });
+        console.log('Reconciliation: verdict recovered from GitHub for', task.id);
+      } catch (err) {
+        console.error('[reconciliation] verdict recovery failed for task', task.id, ':', err.message);
+      }
+    }
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200); res.end(JSON.stringify({ status: 'ok', port: PORT })); return;
+  }
+
+  if (req.method === 'GET' && req.url === '/smoke-test') {
+    const checks = await runSmokeTest();
+    const overall = Object.values(checks).every(v => v === 'pass') ? 'pass' : 'fail';
+    res.writeHead(overall === 'pass' ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ overall, checks }, null, 2));
+    return;
   }
 
   if (req.method !== 'POST' || req.url !== '/webhook') {
@@ -296,8 +433,26 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`[reviewer-bot-github] HTTP server on port ${PORT}`);
   console.log(`[reviewer-bot-github] Webhook endpoint: POST http://localhost:${PORT}/webhook`);
   console.log(`[reviewer-bot-github] Health: GET http://localhost:${PORT}/health`);
+
+  const checks = await runSmokeTest();
+  console.log('[reviewer-bot] Startup verification:');
+  console.log('  Secret present:', checks.secret);
+  console.log('  Tunnel reachable:', checks.tunnel);
+  console.log('  GitHub auth valid:', checks.github);
+  console.log('  Control Plane reachable:', checks.control_plane);
+
+  const criticalFailed = ['secret', 'github', 'control_plane'].filter(k => checks[k] !== 'pass');
+  if (criticalFailed.length > 0) {
+    const msg = `⚠️ Reviewer Bot startup check failed: ${criticalFailed.join(', ')}\nManual intervention needed.`;
+    console.error('[reviewer-bot] STARTUP FAILURE:', msg);
+    await sendTelegram(msg);
+  }
 });
+
+setTimeout(() => {
+  setInterval(() => runReconciliation().catch(e => console.error('[reconciliation] error:', e.message)), 10 * 60 * 1000);
+}, 2 * 60 * 1000);
