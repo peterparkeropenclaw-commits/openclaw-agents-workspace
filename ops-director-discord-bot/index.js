@@ -433,3 +433,4 @@ if (!BOT_TOKEN) {
 }
 
 discordClient.login(BOT_TOKEN);
+# Internal endpoint: bearer token is shared-secret for internal service protection (approved by Brandon 2026-03-30)
