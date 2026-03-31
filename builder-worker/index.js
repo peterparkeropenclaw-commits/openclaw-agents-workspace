@@ -6,6 +6,40 @@
  * Evidence-backed responses only.
  */
 
+// ─── Fix 7: Silent-exit prevention — must be FIRST, before any async code ─────
+let taskId = null;
+const cpBaseUrl = process.env.CP_URL || process.env.CONTROL_PLANE_URL || 'http://localhost:3210';
+
+async function reportFailure(error) {
+  if (!taskId) return;
+  try {
+    await fetch(`${cpBaseUrl}/tasks/${taskId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'failed',
+        summary: `Worker crashed: ${error?.message || error}`,
+        error: String(error)
+      })
+    });
+  } catch (e) {
+    console.error('[worker] Failed to report failure to CP:', e.message);
+  }
+}
+
+process.on('uncaughtException', async (err) => {
+  console.error('[worker] Uncaught exception:', err);
+  await reportFailure(err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', async (err) => {
+  console.error('[worker] Unhandled rejection:', err);
+  await reportFailure(err);
+  process.exit(1);
+});
+// ─── End Fix 7 ────────────────────────────────────────────────────────────────
+
 require('dotenv').config();
 const express = require('express');
 const { execSync, exec: execAsync } = require('child_process');
@@ -20,6 +54,8 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const CP_URL = process.env.CONTROL_PLANE_URL || 'http://localhost:3210';
 const BUILDER_SECRET = process.env.BUILDER_SECRET || 'builder-internal-secret-2026';
 const WORK_DIR = process.env.WORK_DIR || '/tmp/builder-work';
+// Fix 9: GITHUB_OWNER env var — always use this for repo URL construction
+const GITHUB_OWNER = process.env.GITHUB_OWNER || 'peterparkeropenclaw-commits';
 
 // ─── Memory: save task findings to CP after completion ────────────────────────
 async function saveTaskMemories(taskId, taskType, findings) {
@@ -38,6 +74,26 @@ async function saveTaskMemories(taskId, taskType, findings) {
     }).catch(err => console.warn('[Worker] Memory save failed:', err.message));
   }
 }
+
+// ─── Fix 8: Memory context fetch — graceful skip on failure ──────────────────
+async function fetchMemoryContext(scope) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(
+      `http://localhost:3210/memory/context?scope=${scope}&include_global=true`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.context_block || null;
+  } catch (err) {
+    console.warn('[worker] Memory fetch failed, continuing without context:', err.message);
+    return null;
+  }
+}
+// ─── End Fix 8 ────────────────────────────────────────────────────────────────
 
 if (!OPENAI_API_KEY) { console.error('[builder] FATAL: OPENAI_API_KEY not set'); process.exit(1); }
 if (!GITHUB_TOKEN)   { console.error('[builder] FATAL: GITHUB_TOKEN not set');   process.exit(1); }
@@ -82,7 +138,7 @@ app.post('/dispatch', (req, res) => {
 // ─── Core: POST /run-task ─────────────────────────────────────────────────────
 app.post('/run-task', requireAuth, async (req, res) => {
   const {
-    taskId,
+    taskId: reqTaskId,
     repo,          // e.g. "peterparkeropenclaw-commits/review-responder"
     baseBranch = 'main',
     targetBranch,  // optional: if set, checkout and commit to this existing branch (no new branch created, no new PR)
@@ -91,7 +147,11 @@ app.post('/run-task', requireAuth, async (req, res) => {
     constraints = ''
   } = req.body;
 
-  const required = { taskId, repo, title, brief };
+  // Fix 7: Set global taskId for crash reporting ASAP
+  taskId = reqTaskId || process.env.TASK_ID || null;
+  const taskIdLocal = taskId;
+
+  const required = { taskId: taskIdLocal, repo, title, brief };
   for (const [k, v] of Object.entries(required)) {
     if (!v) return res.status(400).json({ ok: false, error: `Missing required field: ${k}` });
   }
