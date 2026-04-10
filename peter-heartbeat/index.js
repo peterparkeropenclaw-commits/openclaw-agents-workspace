@@ -49,14 +49,17 @@ function saveCooldowns(c) { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, n
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
+  // Strip all HTML tags and decode common entities — plain text only, no parse_mode
+  const plainText = message
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        chat_id:    chatId,
-        text:       message.replace(/[_*`\[\]()~>#+=|{}.!]/g, ''),
-        parse_mode: 'HTML',
+        chat_id: chatId,
+        text:    plainText,
       }),
     });
     const data = await res.json();
