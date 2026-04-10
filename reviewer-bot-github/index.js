@@ -106,7 +106,7 @@ async function notifyPeter(message) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
     }, res => { res.resume(); resolve(res.statusCode); });
-    req.on('error', e => { console.error('[peter-notify] error:', e.message); resolve(null); });
+    req.on('error', e => { console.error('[peter-notify] error:', e.message || e.code || String(e)); resolve(null); });
     req.write(payload);
     req.end();
   });
@@ -126,6 +126,27 @@ async function sendTelegram(message) {
     console.error('[telegram] error:', err.message);
   }
 }
+
+const MISSION_CONTROL_CHAT_ID = '-5085897499';
+
+async function sendMissionControl(message) {
+  const TELEGRAM_TOKEN = process.env.PETER_TELEGRAM_TOKEN;
+  if (!TELEGRAM_TOKEN) return;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: MISSION_CONTROL_CHAT_ID, text: message }),
+    });
+    if (!res.ok) console.error('[mission-control] send failed:', res.status, await res.text());
+  } catch (err) {
+    console.error('[mission-control] error:', err.message || String(err));
+  }
+}
+
+// Track PRs received via webhook. Removed when review completes (success or failure after retry).
+// key: "owner/repo#prNumber"
+const pendingPRs = new Map();
 
 async function runReview(prData, attempt = 1) {
   const { owner, repo, prNumber, title, body } = prData;
@@ -418,15 +439,24 @@ const server = http.createServer(async (req, res) => {
     console.log(`[reviewer-bot] PR #${prNumber} ${action}: ${owner}/${repo} — "${title}"`);
     log({ type: 'received', owner, repo, prNumber, title, action });
 
+    const prKey = `${owner}/${repo}#${prNumber}`;
+    if (action === 'opened') {
+      pendingPRs.set(prKey, { owner, repo, prNumber, title, openedAt: Date.now() });
+    }
+
     try {
       await runReview({ owner, repo, prNumber, title, body: prBody });
+      pendingPRs.delete(prKey);
     } catch (err) {
       console.error('[reviewer-bot] review failed:', err.message);
       log({ type: 'error', owner, repo, prNumber, error: err.message });
 
       console.log('[reviewer-bot] retrying once...');
-      setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).catch(e => {
+      setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).then(() => {
+        pendingPRs.delete(prKey);
+      }).catch(e => {
         console.error('[reviewer-bot] retry failed:', e.message);
+        pendingPRs.delete(prKey);
         notifyPeter(`⚠️ Reviewer bot FAILED on PR #${prNumber} (${owner}/${repo})\nError: ${e.message}\nManual review needed.\nhttps://github.com/${owner}/${repo}/pull/${prNumber}`);
       }), 5000);
     }
@@ -455,4 +485,19 @@ server.listen(PORT, async () => {
 
 setTimeout(() => {
   setInterval(() => runReconciliation().catch(e => console.error('[reconciliation] error:', e.message)), 10 * 60 * 1000);
+}, 2 * 60 * 1000);
+
+// 10-minute PR response watchdog: alert Mission Control if a PR has had no response after 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [prKey, { owner, repo, prNumber, title, openedAt }] of pendingPRs) {
+    if (now - openedAt >= 10 * 60 * 1000) {
+      pendingPRs.delete(prKey);
+      const ageMin = Math.round((now - openedAt) / 60000);
+      console.warn(`[watchdog] PR #${prNumber} on ${owner}/${repo} has had no review after ${ageMin}m — alerting Mission Control`);
+      sendMissionControl(
+        `⚠️ Reviewer Bot silent alert\nPR #${prNumber} on ${owner}/${repo} has had no review after ${ageMin} minutes.\n"${title}"\nhttps://github.com/${owner}/${repo}/pull/${prNumber}\nCheck reviewer-bot-github logs.`
+      );
+    }
+  }
 }, 2 * 60 * 1000);
