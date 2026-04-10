@@ -119,13 +119,20 @@ function runGenerator(scriptPath, inputJsonPath) {
 function buildFreeAuditInput(airbnbUrl) {
   return {
     listing_url:                  airbnbUrl,
-    property_name:                'Your property',
-    location:                     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
+    // property_name and location are left blank so generate-free-audit.js scrapes them
+    property_name:                '',
+    location:                     '',
     date:                         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
     currency_code:                airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
     overall_score:                47,
     score_narrative:              'Audit in progress — score will be personalised by Brandon.',
     monthly_revenue_gap_estimate: airbnbUrl.includes('airbnb.co.uk') ? '£180–£320/month' : '$200–$380/month',
+    // Placeholder sub-scores that reflect a typical under-optimised listing
+    title_score:    45,
+    desc_score:     52,
+    photo_score:    40,
+    pricing_score:  48,
+    platform_score: 50,
     top_3_issues: [
       { issue: 'Personalised audit pending', description: 'Brandon will review and update these findings.', revenue_impact: 'Est. impact: TBD' },
     ],
