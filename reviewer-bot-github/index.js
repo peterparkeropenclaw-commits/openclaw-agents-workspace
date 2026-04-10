@@ -130,7 +130,7 @@ async function sendTelegram(message) {
 const MISSION_CONTROL_CHAT_ID = '-5085897499';
 
 async function sendMissionControl(message) {
-  const TELEGRAM_TOKEN = process.env.PETER_TELEGRAM_TOKEN;
+  const TELEGRAM_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
   if (!TELEGRAM_TOKEN) return;
   try {
     const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
