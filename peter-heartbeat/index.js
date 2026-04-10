@@ -49,14 +49,17 @@ function saveCooldowns(c) { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, n
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
+  // Strip all HTML tags and decode common entities — plain text only, no parse_mode
+  const plainText = message
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        chat_id:    chatId,
-        text:       message.replace(/[_*`\[\]()~>#+=|{}.!]/g, ''),
-        parse_mode: 'HTML',
+        chat_id: chatId,
+        text:    plainText,
       }),
     });
     const data = await res.json();
@@ -116,13 +119,20 @@ function runGenerator(scriptPath, inputJsonPath) {
 function buildFreeAuditInput(airbnbUrl) {
   return {
     listing_url:                  airbnbUrl,
-    property_name:                'Your property',
-    location:                     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
+    // property_name and location are left blank so generate-free-audit.js scrapes them
+    property_name:                '',
+    location:                     '',
     date:                         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
     currency_code:                airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
     overall_score:                47,
     score_narrative:              'Audit in progress — score will be personalised by Brandon.',
     monthly_revenue_gap_estimate: airbnbUrl.includes('airbnb.co.uk') ? '£180–£320/month' : '$200–$380/month',
+    // Placeholder sub-scores that reflect a typical under-optimised listing
+    title_score:    45,
+    desc_score:     52,
+    photo_score:    40,
+    pricing_score:  48,
+    platform_score: 50,
     top_3_issues: [
       { issue: 'Personalised audit pending', description: 'Brandon will review and update these findings.', revenue_impact: 'Est. impact: TBD' },
     ],
