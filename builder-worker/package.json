@@ -1,0 +1,16 @@
+{
+  "name": "builder-worker",
+  "version": "2.0.0",
+  "description": "Direct execution Builder worker — no Discord, no OpenClaw runtime deps",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "openai": "^4.52.0",
+    "node-fetch": "^3.3.2",
+    "simple-git": "^3.25.0",
+    "dotenv": "^16.4.5"
+  }
+}

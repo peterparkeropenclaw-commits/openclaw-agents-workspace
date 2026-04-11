@@ -1,0 +1,20 @@
+TASK: Mission Control cleanup pass
+Priority: High
+
+1. STALE TASK CLEANUP
+Archive/hide ~77 stale test tasks from today's control-loop testing.
+Keep production-relevant tasks visible. Add archive flag rather than hard delete if safer.
+Success: Tasks page readable, dashboard not dominated by test clutter.
+
+2. FIX BRAIN DUMP 404
+Brain Dump page shows: API error 404 {"detail":"Not Found"}
+Diagnose and fix: check frontend route, backend endpoint registration, API path mismatch.
+Success: page loads, entries can be created and persist.
+
+3. NAV CLEANUP
+Hide from sidebar nav: Live Feed, Gateways (dead weight until built)
+Keep: Dashboard, Attention, Agents, Services, Flows, Tasks, Brain Dump, Control Loop, Approvals
+
+DELIVERY
+Create branch, implement all three, open PR, verify in production after merge.
+Return with: PR URL, summary of archived tasks, Brain Dump root cause, nav confirmation.

@@ -37,25 +37,75 @@ const LIVE_URLS = {
 const OWNER = 'peterparkeropenclaw-commits';
 const REPOS = ['review-responder', 'airbnb-optimiser', 'optilyst-app'];
 
-const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'peter-state.json');
+const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'workspace', 'memory', 'heartbeat-state.json');
 const COOLDOWNS_FILE = path.join(process.env.HOME, '.openclaw', 'heartbeat-cooldowns.json');
 
 // ─── State helpers ─────────────────────────────────────────────────────────────
-function loadState()  { try { return JSON.parse(fs.readFileSync(STATE_FILE,     'utf8')); } catch { return { lastTelegramSent: null }; } }
-function saveState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
+function loadState()  {
+  try {
+    if (!fs.existsSync(STATE_FILE)) {
+      const initial = { lastTelegramSent: null, lastChecks: {} };
+      fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+      fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
+      return initial;
+    }
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch (e) {
+    console.error('[state] load error:', e.message);
+    return { lastTelegramSent: null, lastChecks: {} };
+  }
+}
+function saveState(s) {
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  } catch (e) { console.error('[state] save error:', e.message); }
+}
 function loadCooldowns()  { try { return JSON.parse(fs.readFileSync(COOLDOWNS_FILE, 'utf8')); } catch { return {}; } }
-function saveCooldowns(c) { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); }
+function saveCooldowns(c) { try { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); } catch (e) { console.error('[state] saveCooldowns error:', e.message); } }
+
+// ─── Telegram HTML sanitiser ──────────────────────────────────────────────────
+function sanitiseTelegramHTML(text) {
+  if (typeof text !== 'string') return '';
+  // Allowed tags: b, i, u, s, code, pre, a
+  // Remove any other tags entirely (including attributes) but keep their text content
+  return text.replace(/<([^>]+)>/g, (m, inner) => {
+    const tagMatch = inner.match(/^\s*\/?\s*([a-zA-Z0-9]+)\b/);
+    if (!tagMatch) return '';
+    const tag = tagMatch[1].toLowerCase();
+    const allowed = ['b','i','u','s','code','pre','a'];
+    if (allowed.includes(tag)) {
+      // For <a>, preserve href attribute only and sanitize it
+      if (tag === 'a') {
+        const hrefMatch = inner.match(/href\s*=\s*"([^"]+)"/i) || inner.match(/href\s*=\s*'([^']+)'/i);
+        if (hrefMatch) {
+          const href = hrefMatch[1].replace(/"/g, '');
+          return `<a href="${href}">`;
+        }
+        // If no href, strip tag
+        return '';
+      }
+      return `<${tag}>`;
+    }
+    return '';
+  }).replace(/<\s*\/\s*([a-zA-Z0-9]+)\s*>/g, (m, tag) => {
+    const t = tag.toLowerCase();
+    const allowed = ['b','i','u','s','code','pre','a'];
+    return allowed.includes(t) ? `</${t}>` : '';
+  });
+}
 
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
+    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~>#+=|{}.!]/g, '');
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id:    chatId,
-        text:       message.replace(/[_*`\[\]()~>#+=|{}.!]/g, ''),
+        text:       safe,
         parse_mode: 'HTML',
       }),
     });
@@ -317,11 +367,12 @@ async function sendMorningBriefing() {
 
 // ─── Stale task watchdog → Mission Control ─────────────────────────────────────
 async function runHeartbeat() {
+  const state = loadState();
   console.log(`[heartbeat] Running at ${new Date().toISOString()}`);
 
-  await pollStrClinicUpdates();
-
   try {
+    await pollStrClinicUpdates();
+
     const res = await fetch('http://localhost:3210/tasks/active');
     if (!res.ok) { console.error('[heartbeat] Control Plane unreachable:', res.status); return; }
 
@@ -362,7 +413,16 @@ async function runHeartbeat() {
     }
 
     if (cooldownsDirty) saveCooldowns(cooldowns);
-  } catch (err) { console.error('[heartbeat] error:', err.message); }
+
+    // record last successful run time
+    state.lastChecks = state.lastChecks || {};
+    state.lastChecks.heartbeat = Date.now();
+  } catch (err) {
+    console.error('[heartbeat] error:', err.message);
+  } finally {
+    // Persist state on every tick so we survive restarts
+    saveState(state);
+  }
 }
 
 // ─── Startup checks ────────────────────────────────────────────────────────────
