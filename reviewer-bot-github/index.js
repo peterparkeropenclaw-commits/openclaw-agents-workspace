@@ -194,19 +194,6 @@ If CHANGES REQUESTED list each issue with exact file name and line number where 
 
   log({ type: 'review', owner, repo, prNumber, title, approved, needsEscalation, diffLines });
 
-  // Notify Control Plane of verdict
-  const verdictPayload = {
-    verdict: approved ? 'approved' : 'changes_requested',
-    actor: 'reviewer-bot',
-    reviewer: 'openclawreviewer-a11y',
-    repo: `${owner}/${repo}`,
-    pr_number: prNumber,
-    pr_url: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
-    summary: reviewText.slice(0, 500),
-  };
-
-  await postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, `${owner}/${repo}`);
-
   if (!approved || needsEscalation) {
     const issues = reviewText.split('\n').filter(l => l.includes('FAIL') || l.startsWith('-')).join('\n');
     await notifyPeter(
@@ -225,25 +212,6 @@ function verifySignature(payload, signature) {
   try { return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)); } catch { return false; }
 }
 
-async function postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, repo) {
-  const delays = [0, 5000, 30000, 120000];
-  for (let attempt = 0; attempt < delays.length; attempt++) {
-    if (delays[attempt] > 0) await new Promise(r => setTimeout(r, delays[attempt]));
-    try {
-      const cpRes = await fetch(`http://localhost:3210/tasks/OC-${ocTaskId}/verdict`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(verdictPayload),
-      });
-      if (cpRes.ok) return;
-      const errText = await cpRes.text();
-      console.error(`[control-plane] verdict attempt ${attempt + 1} failed for OC-${ocTaskId}:`, errText);
-    } catch (err) {
-      console.error(`[control-plane] verdict attempt ${attempt + 1} error for OC-${ocTaskId}:`, err.message);
-    }
-  }
-  await sendTelegram(`⚠️ CP verdict POST failed for task OC-${ocTaskId} PR #${prNumber}.\nManual state update needed.`);
-}
 
 async function runSmokeTest() {
   const checks = {
@@ -343,27 +311,8 @@ async function runReconciliation() {
         console.error('[reconciliation] review trigger failed for task', task.id, ':', err.message);
       }
     } else {
-      const verdict = botReview.state === 'APPROVED' ? 'approved' : 'changes_requested';
-      const verdictPayload = {
-        verdict,
-        actor: 'reconciliation',
-        reviewer: 'openclawreviewer-a11y',
-        repo: `${owner}/${repoName}`,
-        pr_number: prNumber,
-        pr_url: `https://github.com/${owner}/${repoName}/pull/${prNumber}`,
-        summary: '(recovered by reconciliation)',
-      };
-      try {
-        await fetch(`http://localhost:3210/tasks/${task.id}/verdict`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(verdictPayload),
-        });
-        log({ type: 'reconciliation', action: 'verdict_recovered', taskId: task.id });
-        console.log('Reconciliation: verdict recovered from GitHub for', task.id);
-      } catch (err) {
-        console.error('[reconciliation] verdict recovery failed for task', task.id, ':', err.message);
-      }
+        log({ type: 'reconciliation', action: 'already_reviewed', taskId: task.id });
+        console.log('Reconciliation: PR already reviewed for', task.id);
     }
   }
 }
