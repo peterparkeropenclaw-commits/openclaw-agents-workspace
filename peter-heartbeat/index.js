@@ -37,31 +37,87 @@ const LIVE_URLS = {
 const OWNER = 'peterparkeropenclaw-commits';
 const REPOS = ['review-responder', 'airbnb-optimiser', 'optilyst-app'];
 
-const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'peter-state.json');
+const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'workspace', 'memory', 'heartbeat-state.json');
 const COOLDOWNS_FILE = path.join(process.env.HOME, '.openclaw', 'heartbeat-cooldowns.json');
 
 // ─── State helpers ─────────────────────────────────────────────────────────────
-function loadState()  { try { return JSON.parse(fs.readFileSync(STATE_FILE,     'utf8')); } catch { return { lastTelegramSent: null }; } }
-function saveState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
+function loadState()  {
+  try {
+    if (!fs.existsSync(STATE_FILE)) {
+      const initial = { lastTelegramSent: null, lastChecks: {} };
+      fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+      fs.writeFileSync(STATE_FILE, JSON.stringify(initial, null, 2));
+      return initial;
+    }
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+  } catch (e) {
+    console.error('[state] load error:', e.message);
+    return { lastTelegramSent: null, lastChecks: {} };
+  }
+}
+function saveState(s) {
+  try {
+    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+    fs.writeFileSync(STATE_FILE, JSON.stringify(s, null, 2));
+  } catch (e) { console.error('[state] save error:', e.message); }
+}
 function loadCooldowns()  { try { return JSON.parse(fs.readFileSync(COOLDOWNS_FILE, 'utf8')); } catch { return {}; } }
-function saveCooldowns(c) { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); }
+function saveCooldowns(c) { try { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); } catch (e) { console.error('[state] saveCooldowns error:', e.message); } }
+
+// ─── Telegram HTML sanitiser ──────────────────────────────────────────────────
+function sanitiseTelegramHTML(text) {
+  if (typeof text !== 'string') return '';
+  // Allowed tags: b, i, u, s, code, pre, a
+  // Remove any other tags entirely (including attributes) but keep their text content
+  return text.replace(/<([^>]+)>/g, (m, inner) => {
+    const tagMatch = inner.match(/^\s*\/?\s*([a-zA-Z0-9]+)\b/);
+    if (!tagMatch) return '';
+    const tag = tagMatch[1].toLowerCase();
+    const allowed = ['b','i','u','s','code','pre','a'];
+    if (allowed.includes(tag)) {
+      // For <a>, preserve href attribute only and sanitize it
+      if (tag === 'a') {
+        const hrefMatch = inner.match(/href\s*=\s*"([^"]+)"/i) || inner.match(/href\s*=\s*'([^']+)'/i);
+        if (hrefMatch) {
+          const href = hrefMatch[1].replace(/"/g, '');
+          return `<a href="${href}">`;
+        }
+        // If no href, strip tag
+        return '';
+      }
+      return `<${tag}>`;
+    }
+    return '';
+  }).replace(/<\s*\/\s*([a-zA-Z0-9]+)\s*>/g, (m, tag) => {
+    const t = tag.toLowerCase();
+    const allowed = ['b','i','u','s','code','pre','a'];
+    return allowed.includes(t) ? `</${t}>` : '';
+  });
+}
 
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
+    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~+=|{}!]/g, '');
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id:    chatId,
-        text:       message.replace(/[_*`\[\]()~>#+=|{}.!]/g, ''),
-        parse_mode: 'HTML',
-      }),
+      body: JSON.stringify({ chat_id: chatId, text: safe, parse_mode: 'HTML' }),
     });
     const data = await res.json();
-    if (!data.ok) console.error('[telegram] send failed:', data.description);
-    return data.ok;
+    if (data.ok) return true;
+    // HTML parse failed — retry as plain text so the message always gets through
+    console.warn('[telegram] HTML send failed, retrying as plain text:', data.description);
+    const plain = message.replace(/<[^>]+>/g, '').replace(/[_*`\[\]()~+=|{}!]/g, '');
+    const res2 = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: plain }),
+    });
+    const data2 = await res2.json();
+    if (!data2.ok) console.error('[telegram] plain text send also failed:', data2.description);
+    return data2.ok;
   } catch (err) { console.error('[telegram] error:', err.message); return false; }
 }
 
@@ -105,10 +161,11 @@ function runGenerator(scriptPath, inputJsonPath) {
         return;
       }
       const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      resolve(match ? match[0] : null);
+      const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map(m => m[1]);
+      resolve({ driveLink: match ? match[0] : null, qaErrors });
     });
 
-    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (5min)')); }, 300_000);
+    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (10min)')); }, 600_000);
   });
 }
 
@@ -138,7 +195,6 @@ function buildPaidAuditInput(airbnbUrl) {
   return {
     listing_url:  airbnbUrl,
     _scrape_url:  airbnbUrl,
-    property_name: 'Your property',
     location:     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
     date:         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
     currency_code: airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
@@ -180,13 +236,16 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
 
   // 4. Run generator (long-running — up to 5 min)
   try {
-    const driveLink = await runGenerator(script, tmpInput);
+    const { driveLink, qaErrors } = await runGenerator(script, tmpInput);
 
     if (driveLink) {
       console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-      await sendTelegram(
-        `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nDrive: ${driveLink}`
-      );
+      let msg = `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}`;
+      if (qaErrors.length > 0) {
+        msg += `\n\n⚠️ QA flagged ${qaErrors.length} issue${qaErrors.length !== 1 ? 's' : ''} — review before sending to customer\n${qaErrors.map(e => `• ${e}`).join('\n')}`;
+      }
+      msg += `\n\nDrive: ${driveLink}`;
+      await sendTelegram(msg);
     } else {
       console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
       await sendTelegram(
@@ -275,6 +334,7 @@ async function notifyControlPlaneDeployed(taskId, liveUrl) {
 
 // ─── Morning briefing → Mission Control ───────────────────────────────────────
 async function sendMorningBriefing() {
+  console.log('[heartbeat] Morning briefing triggered at', new Date().toISOString());
   const state   = loadState();
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
   const lines   = ['☀️ Morning briefing.\n'];
@@ -310,18 +370,24 @@ async function sendMorningBriefing() {
     }
   } catch { lines.push('\nControl Plane: unreachable'); }
 
-  await sendTelegram(lines.join('\n'));
-  state.lastTelegramSent = new Date().toISOString();
-  saveState(state);
+  try {
+    await sendTelegram(lines.join('\n'));
+    state.lastTelegramSent = new Date().toISOString();
+    saveState(state);
+    console.log('[heartbeat] Morning briefing sent successfully');
+  } catch (err) {
+    console.error('[heartbeat] Morning briefing sendTelegram failed:', err.message);
+  }
 }
 
 // ─── Stale task watchdog → Mission Control ─────────────────────────────────────
 async function runHeartbeat() {
+  const state = loadState();
   console.log(`[heartbeat] Running at ${new Date().toISOString()}`);
 
-  await pollStrClinicUpdates();
-
   try {
+    await pollStrClinicUpdates();
+
     const res = await fetch('http://localhost:3210/tasks/active');
     if (!res.ok) { console.error('[heartbeat] Control Plane unreachable:', res.status); return; }
 
@@ -362,7 +428,16 @@ async function runHeartbeat() {
     }
 
     if (cooldownsDirty) saveCooldowns(cooldowns);
-  } catch (err) { console.error('[heartbeat] error:', err.message); }
+
+    // record last successful run time
+    state.lastChecks = state.lastChecks || {};
+    state.lastChecks.heartbeat = Date.now();
+  } catch (err) {
+    console.error('[heartbeat] error:', err.message);
+  } finally {
+    // Persist state on every tick so we survive restarts
+    saveState(state);
+  }
 }
 
 // ─── Startup checks ────────────────────────────────────────────────────────────
@@ -378,9 +453,12 @@ const now    = new Date();
 const next8am = new Date();
 next8am.setHours(8, 0, 0, 0);
 if (next8am <= now) next8am.setDate(next8am.getDate() + 1);
+console.log('[heartbeat] Morning briefing scheduled in', Math.round((next8am - now) / 60000), 'minutes (at', next8am.toISOString() + ')');
 setTimeout(() => {
-  sendMorningBriefing();
-  setInterval(sendMorningBriefing, 24 * 60 * 60 * 1000);
+  sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
+  setInterval(() => {
+    sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
+  }, 24 * 60 * 60 * 1000);
 }, next8am - now);
 
 runHeartbeat();
