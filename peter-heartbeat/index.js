@@ -331,6 +331,7 @@ async function notifyControlPlaneDeployed(taskId, liveUrl) {
 
 // ─── Morning briefing → Mission Control ───────────────────────────────────────
 async function sendMorningBriefing() {
+  console.log('[heartbeat] Morning briefing triggered at', new Date().toISOString());
   const state   = loadState();
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
   const lines   = ['☀️ Morning briefing.\n'];
@@ -366,9 +367,14 @@ async function sendMorningBriefing() {
     }
   } catch { lines.push('\nControl Plane: unreachable'); }
 
-  await sendTelegram(lines.join('\n'));
-  state.lastTelegramSent = new Date().toISOString();
-  saveState(state);
+  try {
+    await sendTelegram(lines.join('\n'));
+    state.lastTelegramSent = new Date().toISOString();
+    saveState(state);
+    console.log('[heartbeat] Morning briefing sent successfully');
+  } catch (err) {
+    console.error('[heartbeat] Morning briefing sendTelegram failed:', err.message);
+  }
 }
 
 // ─── Stale task watchdog → Mission Control ─────────────────────────────────────
@@ -444,9 +450,12 @@ const now    = new Date();
 const next8am = new Date();
 next8am.setHours(8, 0, 0, 0);
 if (next8am <= now) next8am.setDate(next8am.getDate() + 1);
+console.log('[heartbeat] Morning briefing scheduled in', Math.round((next8am - now) / 60000), 'minutes (at', next8am.toISOString() + ')');
 setTimeout(() => {
-  sendMorningBriefing();
-  setInterval(sendMorningBriefing, 24 * 60 * 60 * 1000);
+  sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
+  setInterval(() => {
+    sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
+  }, 24 * 60 * 60 * 1000);
 }, next8am - now);
 
 runHeartbeat();
