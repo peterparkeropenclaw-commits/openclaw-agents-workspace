@@ -99,7 +99,7 @@ function sanitiseTelegramHTML(text) {
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
-    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~+=|{}.!]/g, '');
+    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~+=|{}!]/g, '');
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -109,7 +109,7 @@ async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId
     if (data.ok) return true;
     // HTML parse failed — retry as plain text so the message always gets through
     console.warn('[telegram] HTML send failed, retrying as plain text:', data.description);
-    const plain = message.replace(/<[^>]+>/g, '').replace(/[_*`\[\]()~+=|{}.!]/g, '');
+    const plain = message.replace(/<[^>]+>/g, '').replace(/[_*`\[\]()~+=|{}!]/g, '');
     const res2 = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -161,10 +161,11 @@ function runGenerator(scriptPath, inputJsonPath) {
         return;
       }
       const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      resolve(match ? match[0] : null);
+      const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map(m => m[1]);
+      resolve({ driveLink: match ? match[0] : null, qaErrors });
     });
 
-    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (5min)')); }, 300_000);
+    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (10min)')); }, 600_000);
   });
 }
 
@@ -194,7 +195,6 @@ function buildPaidAuditInput(airbnbUrl) {
   return {
     listing_url:  airbnbUrl,
     _scrape_url:  airbnbUrl,
-    property_name: 'Your property',
     location:     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
     date:         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
     currency_code: airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
@@ -236,13 +236,16 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
 
   // 4. Run generator (long-running — up to 5 min)
   try {
-    const driveLink = await runGenerator(script, tmpInput);
+    const { driveLink, qaErrors } = await runGenerator(script, tmpInput);
 
     if (driveLink) {
       console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-      await sendTelegram(
-        `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nDrive: ${driveLink}`
-      );
+      let msg = `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}`;
+      if (qaErrors.length > 0) {
+        msg += `\n\n⚠️ QA flagged ${qaErrors.length} issue${qaErrors.length !== 1 ? 's' : ''} — review before sending to customer\n${qaErrors.map(e => `• ${e}`).join('\n')}`;
+      }
+      msg += `\n\nDrive: ${driveLink}`;
+      await sendTelegram(msg);
     } else {
       console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
       await sendTelegram(
