@@ -64,52 +64,32 @@ function saveState(s) {
 function loadCooldowns()  { try { return JSON.parse(fs.readFileSync(COOLDOWNS_FILE, 'utf8')); } catch { return {}; } }
 function saveCooldowns(c) { try { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); } catch (e) { console.error('[state] saveCooldowns error:', e.message); } }
 
-// ─── Telegram HTML sanitiser ──────────────────────────────────────────────────
-function sanitiseTelegramHTML(text) {
-  if (typeof text !== 'string') return '';
-  // Allowed tags: b, i, u, s, code, pre, a
-  // Remove any other tags entirely (including attributes) but keep their text content
-  return text.replace(/<([^>]+)>/g, (m, inner) => {
-    const tagMatch = inner.match(/^\s*\/?\s*([a-zA-Z0-9]+)\b/);
-    if (!tagMatch) return '';
-    const tag = tagMatch[1].toLowerCase();
-    const allowed = ['b','i','u','s','code','pre','a'];
-    if (allowed.includes(tag)) {
-      // For <a>, preserve href attribute only and sanitize it
-      if (tag === 'a') {
-        const hrefMatch = inner.match(/href\s*=\s*"([^"]+)"/i) || inner.match(/href\s*=\s*'([^']+)'/i);
-        if (hrefMatch) {
-          const href = hrefMatch[1].replace(/"/g, '');
-          return `<a href="${href}">`;
-        }
-        // If no href, strip tag
-        return '';
-      }
-      return `<${tag}>`;
-    }
-    return '';
-  }).replace(/<\s*\/\s*([a-zA-Z0-9]+)\s*>/g, (m, tag) => {
-    const t = tag.toLowerCase();
-    const allowed = ['b','i','u','s','code','pre','a'];
-    return allowed.includes(t) ? `</${t}>` : '';
-  });
+// ─── Telegram HTML helpers ────────────────────────────────────────────────────
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function stripHtml(text) {
+  return String(text || '').replace(/<[^>]+>/g, '');
 }
 
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
-    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~+=|{}.!]/g, '');
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: safe, parse_mode: 'HTML' }),
+      body: JSON.stringify({ chat_id: chatId, text: String(message || ''), parse_mode: 'HTML' }),
     });
     const data = await res.json();
     if (data.ok) return true;
     // HTML parse failed — retry as plain text so the message always gets through
     console.warn('[telegram] HTML send failed, retrying as plain text:', data.description);
-    const plain = message.replace(/<[^>]+>/g, '').replace(/[_*`\[\]()~+=|{}.!]/g, '');
+    const plain = stripHtml(message);
     const res2 = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -222,11 +202,15 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
 
   // 1. Notify CDR webhook (fire-and-forget — don't block on it)
   const cdrBrief = `${typeLabel} requested via STR Clinic listener bot.\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask ID: ${taskId}\n\nGenerator running — will report Drive link to Mission Control when complete.`;
+  const safeTypeLabel = escapeHtml(typeLabel);
+  const safeAirbnbUrl = escapeHtml(airbnbUrl);
+  const safeFromUsername = escapeHtml(fromUsername);
+  const safeTaskId = escapeHtml(taskId);
   notifyCDR(taskId, cdrBrief).catch(() => {});
 
   // 2. Acknowledge on Mission Control immediately
   await sendTelegram(
-    `📋 <b>STR Clinic ${typeLabel}</b>\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask: ${taskId}\n\nGenerator running...`
+    `📋 <b>STR Clinic ${safeTypeLabel}</b>\n\nURL: ${safeAirbnbUrl}\nRequested by: ${safeFromUsername}\nTask: ${safeTaskId}\n\nGenerator running...`
   );
 
   // 3. Write input JSON
@@ -241,18 +225,18 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
     if (driveLink) {
       console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
       await sendTelegram(
-        `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nDrive: ${driveLink}`
+        `✅ <b>STR Clinic ${safeTypeLabel} ready</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nDrive: ${escapeHtml(driveLink)}`
       );
     } else {
       console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
       await sendTelegram(
-        `⚠️ <b>STR Clinic ${typeLabel} generated</b> — Drive link not captured\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nCheck Drive folder: https://drive.google.com/drive/folders/${folder}`
+        `⚠️ <b>STR Clinic ${safeTypeLabel} generated</b> — Drive link not captured\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nCheck Drive folder: ${escapeHtml(`https://drive.google.com/drive/folders/${folder}`)}`
       );
     }
   } catch (err) {
     console.error(`[audit] ${typeLabel} failed:`, err.message);
     await sendTelegram(
-      `❌ <b>STR Clinic ${typeLabel} failed</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nError: ${err.message.slice(0, 200)}`
+      `❌ <b>STR Clinic ${safeTypeLabel} failed</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nError: ${escapeHtml(err.message.slice(0, 200))}`
     );
   }
 }
@@ -311,7 +295,7 @@ async function pollStrClinicUpdates() {
       const auditType = isPaidAudit ? 'paid audit' : 'free audit';
       console.log(`[str-clinic-listener] ${auditType} keyword from ${from} but no Airbnb URL found`);
       await sendTelegram(
-        `⚠️ STR Clinic: "${auditType}" keyword received from ${from} but no Airbnb URL found in message.\n\nMessage: ${text.slice(0, 200)}`
+        `⚠️ STR Clinic: "${escapeHtml(auditType)}" keyword received from ${escapeHtml(from)} but no Airbnb URL found in message.\n\nMessage: ${escapeHtml(text.slice(0, 200))}`
       ).catch(() => {});
     }
   }
@@ -349,7 +333,7 @@ async function sendMorningBriefing() {
     try {
       const { data: prs } = await octokit.pulls.list({ owner: OWNER, repo, state: 'open' });
       openPRCount += prs.length;
-      prs.forEach((pr) => prTitles.push(`#${pr.number} ${pr.title}`));
+      prs.forEach((pr) => prTitles.push(`#${pr.number} ${escapeHtml(pr.title)}`));
     } catch {}
   }
 
@@ -361,7 +345,7 @@ async function sendMorningBriefing() {
     if (cpRes.ok) {
       const tasks = await cpRes.json();
       lines.push(`\nACTIVE TASKS (CP): ${tasks.length}`);
-      tasks.slice(0, 5).forEach((t) => lines.push(`  [${t.id}] ${t.title} — ${t.state}`));
+      tasks.slice(0, 5).forEach((t) => lines.push(`  [${escapeHtml(t.id)}] ${escapeHtml(t.title)} — ${escapeHtml(t.state)}`));
     } else {
       lines.push('\nControl Plane: unreachable');
     }
@@ -417,7 +401,7 @@ async function runHeartbeat() {
           cooldownsDirty = true;
           try {
             await sendTelegram(
-              `⏱ Stale task detected\nTask: ${task.id}\nTitle: ${task.title}\nState: ${task.state}\nLast update: ${task.updated_at}`
+              `⏱ Stale task detected\nTask: ${escapeHtml(task.id)}\nTitle: ${escapeHtml(task.title)}\nState: ${escapeHtml(task.state)}\nLast update: ${escapeHtml(task.updated_at)}`
             );
           } catch (err) { console.error('[heartbeat] telegram send error:', err.message); }
         }
