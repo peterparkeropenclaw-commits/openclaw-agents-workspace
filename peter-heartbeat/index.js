@@ -147,6 +147,9 @@ function runGenerator(scriptPath, inputJsonPath) {
       env: {
         ...process.env,
         GOOGLE_APPLICATION_CREDENTIALS: GOOGLE_CREDS,
+        CDR_WEBHOOK_URL: process.env.CDR_WEBHOOK_URL || CDR_WEBHOOK_URL,
+        TRIGGER_AUTH_TOKEN: process.env.TRIGGER_AUTH_TOKEN || CDR_AUTH_TOKEN,
+        CDR_AUTH_TOKEN: process.env.CDR_AUTH_TOKEN || CDR_AUTH_TOKEN,
       },
     });
 
@@ -193,11 +196,9 @@ function buildFreeAuditInput(airbnbUrl) {
 // ─── Build minimal input JSON for paid audit ──────────────────────────────────
 function buildPaidAuditInput(airbnbUrl) {
   return {
-    listing_url:  airbnbUrl,
-    _scrape_url:  airbnbUrl,
-    location:     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
-    date:         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
-    currency_code: airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
+    listing_url: airbnbUrl,
+    airbnb_url:  airbnbUrl,
+    _scrape_url: airbnbUrl,
   };
 }
 
