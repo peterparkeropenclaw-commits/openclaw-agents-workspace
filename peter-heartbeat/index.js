@@ -122,38 +122,82 @@ async function notifyCDR(taskId, brief) {
 // Returns Drive link extracted from stdout, or null on failure.
 function runGenerator(scriptPath, inputJsonPath) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('node', [scriptPath, '--input', inputJsonPath], {
+    const proc = spawn(process.execPath, [scriptPath, '--input', inputJsonPath], {
       cwd: path.dirname(scriptPath),
       env: {
         ...process.env,
         GOOGLE_APPLICATION_CREDENTIALS: GOOGLE_CREDS,
       },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let output = '';
-    proc.stdout.on('data', (d) => {
-      const text = d.toString();
-      output += text;
-      text.split('\n').filter((l) => l.trim()).forEach((l) => console.log('[generator]', l));
-    });
-    proc.stderr.on('data', (d) => {
-      const text = d.toString();
-      output += text;
-      text.split('\n').filter((l) => l.trim()).forEach((l) => console.error('[generator]', l));
+    let settled = false;
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+
+    const finish = (err, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try { fs.unlinkSync(inputJsonPath); } catch {}
+      if (err) reject(err);
+      else resolve(value);
+    };
+
+    const flushBuffered = (buffer, logger) => {
+      const lines = buffer.split(/\r?\n|\r/g);
+      const remainder = lines.pop() || '';
+      lines.filter((line) => line.trim()).forEach((line) => logger('[generator]', line));
+      return remainder;
+    };
+
+    if (proc.stdout) {
+      proc.stdout.setEncoding('utf8');
+      proc.stdout.on('data', (chunk) => {
+        output += chunk;
+        stdoutBuffer = flushBuffered(stdoutBuffer + chunk, console.log);
+      });
+    } else {
+      console.error('[generator] stdout stream unavailable');
+    }
+
+    if (proc.stderr) {
+      proc.stderr.setEncoding('utf8');
+      proc.stderr.on('data', (chunk) => {
+        output += chunk;
+        stderrBuffer = flushBuffered(stderrBuffer + chunk, console.error);
+      });
+    } else {
+      console.error('[generator] stderr stream unavailable');
+    }
+
+    proc.on('spawn', () => {
+      console.log(`[generator] Spawned PID ${proc.pid} for ${path.basename(scriptPath)}`);
     });
 
-    proc.on('close', (code) => {
-      console.log(`[generator] Process exited with code ${code}`);
-      try { fs.unlinkSync(inputJsonPath); } catch {}
+    proc.on('error', (err) => {
+      finish(new Error(`Generator process error: ${err.message}`));
+    });
+
+    proc.on('close', (code, signal) => {
+      stdoutBuffer = flushBuffered(stdoutBuffer, console.log);
+      stderrBuffer = flushBuffered(stderrBuffer, console.error);
+      if (stdoutBuffer.trim()) console.log('[generator]', stdoutBuffer.trim());
+      if (stderrBuffer.trim()) console.error('[generator]', stderrBuffer.trim());
+      console.log(`[generator] Process exited with code ${code}${signal ? ` (signal ${signal})` : ''}`);
       if (code !== 0) {
-        reject(new Error(`Generator exited ${code}: ${output.slice(-2000)}`));
+        finish(new Error(`Generator exited ${code}: ${output.slice(-2000)}`));
         return;
       }
       const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      resolve(match ? match[0] : null);
+      finish(null, match ? match[0] : null);
     });
 
-    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (5min)')); }, 300_000);
+    const timeout = setTimeout(() => {
+      proc.kill();
+      finish(new Error('Generator timeout (5min)'));
+    }, 300_000);
   });
 }
 
