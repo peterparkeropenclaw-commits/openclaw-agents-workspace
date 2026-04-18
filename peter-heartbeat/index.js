@@ -131,13 +131,22 @@ function runGenerator(scriptPath, inputJsonPath) {
     });
 
     let output = '';
-    proc.stdout.on('data', (d) => { output += d.toString(); });
-    proc.stderr.on('data', (d) => { output += d.toString(); });
+    proc.stdout.on('data', (d) => {
+      const text = d.toString();
+      output += text;
+      text.split('\n').filter((l) => l.trim()).forEach((l) => console.log('[generator]', l));
+    });
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      output += text;
+      text.split('\n').filter((l) => l.trim()).forEach((l) => console.error('[generator]', l));
+    });
 
     proc.on('close', (code) => {
+      console.log(`[generator] Process exited with code ${code}`);
       try { fs.unlinkSync(inputJsonPath); } catch {}
       if (code !== 0) {
-        reject(new Error(`Generator exited ${code}: ${output.slice(-300)}`));
+        reject(new Error(`Generator exited ${code}: ${output.slice(-2000)}`));
         return;
       }
       const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
