@@ -119,7 +119,7 @@ async function notifyCDR(taskId, brief) {
 }
 
 // ─── Run generator script ─────────────────────────────────────────────────────
-// Returns Drive link extracted from stdout, or null on failure.
+// Returns extracted output metadata, including Drive link and telemetry when available.
 function runGenerator(scriptPath, inputJsonPath) {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, [scriptPath, '--input', inputJsonPath], {
@@ -191,7 +191,25 @@ function runGenerator(scriptPath, inputJsonPath) {
         return;
       }
       const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      finish(null, match ? match[0] : null);
+      const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map(m => m[1]);
+      const localPdfPath = output.match(/^Local PDF at:\s+(.+)$/m)?.[1] || null;
+      const telemetryPath = output.match(/^Run telemetry saved:\s+(.+)$/m)?.[1] || null;
+
+      let telemetry = null;
+      if (telemetryPath && fs.existsSync(telemetryPath)) {
+        try {
+          telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+        } catch (err) {
+          console.warn('[audit] failed to read generator telemetry:', err.message);
+        }
+      }
+
+      finish(null, {
+        driveLink: match ? match[0] : null,
+        qaErrors,
+        localPdfPath,
+        telemetry,
+      });
     });
 
     const timeout = setTimeout(() => {
@@ -273,18 +291,31 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
 
   // 4. Run generator (long-running — up to 5 min)
   try {
-    const driveLink = await runGenerator(script, tmpInput);
+    const { driveLink, qaErrors, localPdfPath, telemetry } = await runGenerator(script, tmpInput);
+    const pdfUploadAttempted = Boolean(telemetry?.uploads?.pdf?.attempted);
+    const htmlUploadAttempted = Boolean(telemetry?.uploads?.html?.attempted);
+    const uploadAttempted = pdfUploadAttempted || htmlUploadAttempted;
 
     if (driveLink) {
       console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-      await sendTelegram(
-        `✅ <b>STR Clinic ${safeTypeLabel} ready</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nDrive: ${escapeHtml(driveLink)}`
-      );
+      let msg = `✅ <b>STR Clinic ${safeTypeLabel} ready</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}`;
+      if (qaErrors.length > 0) {
+        msg += `\n\n⚠️ QA flagged ${qaErrors.length} issue${qaErrors.length !== 1 ? 's' : ''} , review before sending to customer\n${qaErrors.map(e => `• ${escapeHtml(e)}`).join('\n')}`;
+      }
+      msg += `\n\nDrive: ${escapeHtml(driveLink)}`;
+      await sendTelegram(msg);
+    } else if (qaErrors.length > 0 && !uploadAttempted) {
+      console.warn(`[audit] ${typeLabel} generated locally but upload was skipped after QA failure`);
+      let msg = `⚠️ <b>STR Clinic ${safeTypeLabel} generated locally</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nUpload skipped because QA failed.`;
+      msg += `\n${qaErrors.map(e => `• ${escapeHtml(e)}`).join('\n')}`;
+      if (localPdfPath) msg += `\n\nLocal PDF: <code>${escapeHtml(localPdfPath)}</code>`;
+      await sendTelegram(msg);
     } else {
       console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
-      await sendTelegram(
-        `⚠️ <b>STR Clinic ${safeTypeLabel} generated</b> — Drive link not captured\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nCheck Drive folder: ${escapeHtml(`https://drive.google.com/drive/folders/${folder}`)}`
-      );
+      let msg = `⚠️ <b>STR Clinic ${safeTypeLabel} generated</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nDrive upload did not produce a link.`;
+      if (localPdfPath) msg += `\nLocal PDF: <code>${escapeHtml(localPdfPath)}</code>`;
+      msg += `\n\nCheck Drive folder: ${escapeHtml(`https://drive.google.com/drive/folders/${folder}`)}`;
+      await sendTelegram(msg);
     }
   } catch (err) {
     console.error(`[audit] ${typeLabel} failed:`, err.message);
