@@ -140,7 +140,7 @@ async function notifyCDR(taskId, brief) {
 
 // ─── Run generator script ─────────────────────────────────────────────────────
 // Returns Drive link extracted from stdout, or null on failure.
-function runGenerator(scriptPath, inputJsonPath) {
+function runGenerator(scriptPath, inputJsonPath, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [scriptPath, '--input', inputJsonPath], {
       cwd: path.dirname(scriptPath),
@@ -150,6 +150,7 @@ function runGenerator(scriptPath, inputJsonPath) {
         CDR_WEBHOOK_URL: process.env.CDR_WEBHOOK_URL || CDR_WEBHOOK_URL,
         TRIGGER_AUTH_TOKEN: process.env.TRIGGER_AUTH_TOKEN || CDR_AUTH_TOKEN,
         CDR_AUTH_TOKEN: process.env.CDR_AUTH_TOKEN || CDR_AUTH_TOKEN,
+        ...extraEnv,
       },
     });
 
@@ -237,7 +238,15 @@ async function triggerAudit(airbnbUrl, type, fromUsername) {
 
   // 4. Run generator (long-running — up to 5 min)
   try {
-    const { driveLink, qaErrors } = await runGenerator(script, tmpInput);
+    const generatorEnv = type === 'paid'
+      ? {
+          REPORTS_DRIVE_FOLDER_ID: process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
+          REPORTS_HTML_FOLDER_ID: process.env.REPORTS_HTML_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
+          STR_CLINIC_REPORTS_FOLDER_ID: process.env.STR_CLINIC_REPORTS_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
+        }
+      : {};
+
+    const { driveLink, qaErrors } = await runGenerator(script, tmpInput, generatorEnv);
 
     if (driveLink) {
       console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
