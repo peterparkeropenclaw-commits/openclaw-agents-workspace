@@ -5,7 +5,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env'), override: true })
 
 const { Octokit } = require('@octokit/rest');
 const fs   = require('fs');
-const { spawn } = require('child_process');
+const { createStrClinicOrchestrator } = require('./str-clinic-orchestrator');
 
 // ─── Telegram config ─────────────────────────────────────────────────────────
 // Mission Control (group chat) — all agent output goes here
@@ -14,18 +14,6 @@ const MISSION_CONTROL_CHAT_ID   = process.env.MISSION_CONTROL_CHAT_ID || '-50858
 
 // STR Clinic dedicated listener bot — eliminates getUpdates race with PeterParkerOpenClawBot
 const STR_CLINIC_BOT_TOKEN = process.env.STR_CLINIC_BOT_TOKEN;
-
-// CDR webhook auth token (matches TRIGGER_AUTH_TOKEN in trigger-server .env)
-const CDR_AUTH_TOKEN  = process.env.TRIGGER_AUTH_TOKEN || process.env.CDR_AUTH_TOKEN || '';
-const CDR_WEBHOOK_URL = 'http://localhost:3104/task';
-
-// ─── Audit generator paths ───────────────────────────────────────────────────
-const FREE_AUDIT_SCRIPT  = path.join(process.env.HOME, 'workspace/str-clinic-free-audit-generator/generate-free-audit.js');
-const PAID_AUDIT_SCRIPT  = path.join(process.env.HOME, 'workspace/str-clinic-pdf-generator/generate-report.js');
-const GOOGLE_CREDS       = path.join(process.env.HOME, 'workspace/full-take-outreach/credentials.json');
-
-const FREE_DRIVE_FOLDER  = '1nMysoqPplQT1S1C4f_Gjj75u_PSVEgpr';
-const PAID_DRIVE_FOLDER  = '12RlJRy_U9lD0mPfH4WVcEYrwdXcSpWar';
 
 // ─── Project config ──────────────────────────────────────────────────────────
 const LIVE_URLS = {
@@ -101,286 +89,18 @@ async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId
   } catch (err) { console.error('[telegram] error:', err.message); return false; }
 }
 
-// ─── CDR webhook notify ────────────────────────────────────────────────────────
-async function notifyCDR(taskId, brief) {
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (CDR_AUTH_TOKEN) headers['Authorization'] = `Bearer ${CDR_AUTH_TOKEN}`;
-    const res = await fetch(CDR_WEBHOOK_URL, {
-      method:  'POST',
-      headers,
-      body: JSON.stringify({ task_id: taskId, brief, priority: 'high', from: 'str-clinic-listener' }),
-    });
-    if (!res.ok) console.error('[cdr-webhook] POST failed:', res.status, await res.text());
-    else console.log('[cdr-webhook] notified:', taskId);
-  } catch (err) {
-    console.error('[cdr-webhook] error:', err.message);
-  }
-}
-
-// ─── Run generator script ─────────────────────────────────────────────────────
-// Returns extracted output metadata, including Drive link and telemetry when available.
-function runGenerator(scriptPath, inputJsonPath) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [scriptPath, '--input', inputJsonPath], {
-      cwd: path.dirname(scriptPath),
-      env: {
-        ...process.env,
-        GOOGLE_APPLICATION_CREDENTIALS: GOOGLE_CREDS,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let output = '';
-    let settled = false;
-    let stdoutBuffer = '';
-    let stderrBuffer = '';
-
-    const finish = (err, value = null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      try { fs.unlinkSync(inputJsonPath); } catch {}
-      if (err) reject(err);
-      else resolve(value);
-    };
-
-    const flushBuffered = (buffer, logger) => {
-      const lines = buffer.split(/\r?\n|\r/g);
-      const remainder = lines.pop() || '';
-      lines.filter((line) => line.trim()).forEach((line) => logger('[generator]', line));
-      return remainder;
-    };
-
-    if (proc.stdout) {
-      proc.stdout.setEncoding('utf8');
-      proc.stdout.on('data', (chunk) => {
-        output += chunk;
-        stdoutBuffer = flushBuffered(stdoutBuffer + chunk, console.log);
-      });
-    } else {
-      console.error('[generator] stdout stream unavailable');
-    }
-
-    if (proc.stderr) {
-      proc.stderr.setEncoding('utf8');
-      proc.stderr.on('data', (chunk) => {
-        output += chunk;
-        stderrBuffer = flushBuffered(stderrBuffer + chunk, console.error);
-      });
-    } else {
-      console.error('[generator] stderr stream unavailable');
-    }
-
-    proc.on('spawn', () => {
-      console.log(`[generator] Spawned PID ${proc.pid} for ${path.basename(scriptPath)}`);
-    });
-
-    proc.on('error', (err) => {
-      finish(new Error(`Generator process error: ${err.message}`));
-    });
-
-    proc.on('close', (code, signal) => {
-      stdoutBuffer = flushBuffered(stdoutBuffer, console.log);
-      stderrBuffer = flushBuffered(stderrBuffer, console.error);
-      if (stdoutBuffer.trim()) console.log('[generator]', stdoutBuffer.trim());
-      if (stderrBuffer.trim()) console.error('[generator]', stderrBuffer.trim());
-      console.log(`[generator] Process exited with code ${code}${signal ? ` (signal ${signal})` : ''}`);
-      if (code !== 0) {
-        finish(new Error(`Generator exited ${code}: ${output.slice(-2000)}`));
-        return;
-      }
-      const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map(m => m[1]);
-      const localPdfPath = output.match(/^Local PDF at:\s+(.+)$/m)?.[1] || null;
-      const telemetryPath = output.match(/^Run telemetry saved:\s+(.+)$/m)?.[1] || null;
-
-      let telemetry = null;
-      if (telemetryPath && fs.existsSync(telemetryPath)) {
-        try {
-          telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
-        } catch (err) {
-          console.warn('[audit] failed to read generator telemetry:', err.message);
-        }
-      }
-
-      finish(null, {
-        driveLink: match ? match[0] : null,
-        qaErrors,
-        localPdfPath,
-        telemetry,
-      });
-    });
-
-    const timeout = setTimeout(() => {
-      proc.kill();
-      finish(new Error('Generator timeout (5min)'));
-    }, 300_000);
-  });
-}
-
-// ─── Build minimal input JSON for free audit ──────────────────────────────────
-function buildFreeAuditInput(airbnbUrl) {
-  return {
-    listing_url:                  airbnbUrl,
-    property_name:                'Your property',
-    location:                     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
-    date:                         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
-    currency_code:                airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
-    overall_score:                47,
-    score_narrative:              'Audit in progress — score will be personalised by Brandon.',
-    monthly_revenue_gap_estimate: airbnbUrl.includes('airbnb.co.uk') ? '£180–£320/month' : '$200–$380/month',
-    top_3_issues: [
-      { issue: 'Personalised audit pending', description: 'Brandon will review and update these findings.', revenue_impact: 'Est. impact: TBD' },
-    ],
-    current_title:     'Retrieving from listing...',
-    rewritten_title:   'Personalised title to be added by Brandon',
-    title_rationale:   'To be added by Brandon.',
-    opportunity_summary: 'Full opportunity analysis to follow.',
-  };
-}
-
-// ─── Build minimal input JSON for paid audit ──────────────────────────────────
-function buildPaidAuditInput(airbnbUrl) {
-  return {
-    listing_url: airbnbUrl,
-    airbnb_url: airbnbUrl,
-    _scrape_url: airbnbUrl,
-  };
-}
-
-// ─── Audit dedup: prevent double-processing same URL within 10 minutes ────────
-const recentAudits = new Map(); // url+type → timestamp
-function isDuplicate(url, type) {
-  const key = `${type}:${url}`;
-  const last = recentAudits.get(key);
-  if (last && Date.now() - last < 10 * 60 * 1000) return true;
-  recentAudits.set(key, Date.now());
-  return false;
-}
-
-// ─── Main audit trigger ────────────────────────────────────────────────────────
-async function triggerAudit(airbnbUrl, type, fromUsername) {
-  const taskId    = `STR-${type.toUpperCase()}-${Date.now()}`;
-  const typeLabel = type === 'free' ? 'Free Audit' : 'Paid Report';
-  const script    = type === 'free' ? FREE_AUDIT_SCRIPT : PAID_AUDIT_SCRIPT;
-  const folder    = type === 'free' ? FREE_DRIVE_FOLDER : PAID_DRIVE_FOLDER;
-
-  console.log(`[audit] ${typeLabel} triggered by ${fromUsername} for ${airbnbUrl}`);
-
-  // 1. Notify CDR webhook (fire-and-forget — don't block on it)
-  const cdrBrief = `${typeLabel} requested via STR Clinic listener bot.\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask ID: ${taskId}\n\nGenerator running — will report Drive link to Mission Control when complete.`;
-  const safeTypeLabel = escapeHtml(typeLabel);
-  const safeAirbnbUrl = escapeHtml(airbnbUrl);
-  const safeFromUsername = escapeHtml(fromUsername);
-  const safeTaskId = escapeHtml(taskId);
-  notifyCDR(taskId, cdrBrief).catch(() => {});
-
-  // 2. Acknowledge on Mission Control immediately
-  await sendTelegram(
-    `📋 <b>STR Clinic ${safeTypeLabel}</b>\n\nURL: ${safeAirbnbUrl}\nRequested by: ${safeFromUsername}\nTask: ${safeTaskId}\n\nGenerator running...`
-  );
-
-  // 3. Write input JSON
-  const inputData = type === 'free' ? buildFreeAuditInput(airbnbUrl) : buildPaidAuditInput(airbnbUrl);
-  const tmpInput  = `/tmp/str-audit-${taskId}.json`;
-  fs.writeFileSync(tmpInput, JSON.stringify(inputData, null, 2));
-
-  // 4. Run generator (long-running — up to 5 min)
-  try {
-    const { driveLink, qaErrors, localPdfPath, telemetry } = await runGenerator(script, tmpInput);
-    const pdfUploadAttempted = Boolean(telemetry?.uploads?.pdf?.attempted);
-    const htmlUploadAttempted = Boolean(telemetry?.uploads?.html?.attempted);
-    const uploadAttempted = pdfUploadAttempted || htmlUploadAttempted;
-
-    if (driveLink) {
-      console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-      let msg = `✅ <b>STR Clinic ${safeTypeLabel} ready</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}`;
-      if (qaErrors.length > 0) {
-        msg += `\n\n⚠️ QA flagged ${qaErrors.length} issue${qaErrors.length !== 1 ? 's' : ''} , review before sending to customer\n${qaErrors.map(e => `• ${escapeHtml(e)}`).join('\n')}`;
-      }
-      msg += `\n\nDrive: ${escapeHtml(driveLink)}`;
-      await sendTelegram(msg);
-    } else if (qaErrors.length > 0 && !uploadAttempted) {
-      console.warn(`[audit] ${typeLabel} generated locally but upload was skipped after QA failure`);
-      let msg = `⚠️ <b>STR Clinic ${safeTypeLabel} generated locally</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nUpload skipped because QA failed.`;
-      msg += `\n${qaErrors.map(e => `• ${escapeHtml(e)}`).join('\n')}`;
-      if (localPdfPath) msg += `\n\nLocal PDF: <code>${escapeHtml(localPdfPath)}</code>`;
-      await sendTelegram(msg);
-    } else {
-      console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
-      let msg = `⚠️ <b>STR Clinic ${safeTypeLabel} generated</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nDrive upload did not produce a link.`;
-      if (localPdfPath) msg += `\nLocal PDF: <code>${escapeHtml(localPdfPath)}</code>`;
-      msg += `\n\nCheck Drive folder: ${escapeHtml(`https://drive.google.com/drive/folders/${folder}`)}`;
-      await sendTelegram(msg);
-    }
-  } catch (err) {
-    console.error(`[audit] ${typeLabel} failed:`, err.message);
-    await sendTelegram(
-      `❌ <b>STR Clinic ${safeTypeLabel} failed</b>\n\nURL: ${safeAirbnbUrl}\nTask: ${safeTaskId}\n\nError: ${escapeHtml(err.message.slice(0, 200))}`
-    );
-  }
-}
-
-// ─── STR Clinic listener — polls dedicated bot for incoming messages ───────────
-let strClinicOffset = 0;
-
-async function pollStrClinicUpdates() {
-  if (!STR_CLINIC_BOT_TOKEN) return;
-
-  let data;
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${STR_CLINIC_BOT_TOKEN}/getUpdates?offset=${strClinicOffset}&timeout=0`
-    );
-    data = await res.json();
-    if (!data.ok) {
-      console.error('[str-clinic-listener] getUpdates failed:', data.description);
-      return;
-    }
-  } catch (err) {
-    console.error('[str-clinic-listener] error:', err.message);
-    return;
-  }
-
-  for (const update of data.result) {
-    strClinicOffset = update.update_id + 1;
-    const msg = update.message;
-    if (!msg) continue;
-
-    const text     = (msg.text || '').trim();
-    const from     = msg.from?.username || msg.from?.first_name || 'unknown';
-    const lower    = text.toLowerCase();
-
-    // Extract Airbnb URL — supports airbnb.com, airbnb.co.uk, airbnb.com.au, etc.
-    const urlMatch = text.match(/https?:\/\/(?:www\.)?airbnb\.[a-z.]+\/rooms\/[^\s]+/i);
-
-    const isFreeAudit = /free\s+audit/i.test(lower);
-    const isPaidAudit = /paid\s+audit/i.test(lower);
-
-    if ((isFreeAudit || isPaidAudit) && urlMatch) {
-      const airbnbUrl = urlMatch[0].replace(/[<>]/g, '').split('?')[0]; // strip tracking params
-      const type      = isPaidAudit ? 'paid' : 'free';
-
-      if (isDuplicate(airbnbUrl, type)) {
-        console.log(`[str-clinic-listener] Duplicate ${type} audit request ignored: ${airbnbUrl}`);
-        continue;
-      }
-
-      // Fire audit async — don't await (polling must stay responsive)
-      triggerAudit(airbnbUrl, type, from).catch((err) => {
-        console.error('[str-clinic-listener] triggerAudit error:', err.message);
-      });
-    } else if (isFreeAudit || isPaidAudit) {
-      // Keyword detected but no Airbnb URL — request clarification via Mission Control
-      const auditType = isPaidAudit ? 'paid audit' : 'free audit';
-      console.log(`[str-clinic-listener] ${auditType} keyword from ${from} but no Airbnb URL found`);
-      await sendTelegram(
-        `⚠️ STR Clinic: "${escapeHtml(auditType)}" keyword received from ${escapeHtml(from)} but no Airbnb URL found in message.\n\nMessage: ${escapeHtml(text.slice(0, 200))}`
-      ).catch(() => {});
-    }
-  }
-}
+const strClinicOrchestrator = createStrClinicOrchestrator({
+  botToken: STR_CLINIC_BOT_TOKEN,
+  cdrAuthToken: process.env.TRIGGER_AUTH_TOKEN || process.env.CDR_AUTH_TOKEN || '',
+  cdrWebhookUrl: 'http://localhost:3104/task',
+  freeAuditScript: path.join(process.env.HOME, 'workspace/str-clinic-free-audit-generator/generate-free-audit.js'),
+  paidAuditScript: path.join(process.env.HOME, 'workspace/str-clinic-pdf-generator/generate-report.js'),
+  googleCreds: path.join(process.env.HOME, 'workspace/full-take-outreach/credentials.json'),
+  freeDriveFolder: '1nMysoqPplQT1S1C4f_Gjj75u_PSVEgpr',
+  paidDriveFolder: '12RlJRy_U9lD0mPfH4WVcEYrwdXcSpWar',
+  sendTelegram,
+  escapeHtml,
+});
 
 // ─── Control Plane notify (deploy hooks) ──────────────────────────────────────
 async function notifyControlPlaneDeployed(taskId, liveUrl) {
@@ -448,7 +168,7 @@ async function runHeartbeat() {
   console.log(`[heartbeat] Running at ${new Date().toISOString()}`);
 
   try {
-    await pollStrClinicUpdates();
+    await strClinicOrchestrator.pollUpdates();
 
     const res = await fetch('http://localhost:3210/tasks/active');
     if (!res.ok) { console.error('[heartbeat] Control Plane unreachable:', res.status); return; }
