@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "str-clinic-worker": "node str-clinic-worker.js"
+    "start:heartbeat": "node index.js",
+    "start:strclinic-listener": "node str-clinic-worker.js"
   },
   "dependencies": {
     "@octokit/rest": "^20.0.2",

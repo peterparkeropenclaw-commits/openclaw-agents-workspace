@@ -68,18 +68,18 @@ async function runStrClinicWorker() {
   try {
     await strClinicOrchestrator.pollUpdates();
   } catch (err) {
-    console.error('[str-clinic-worker] poll error:', err.message);
+    console.error('[strclinic-listener] poll error:', err.message);
   }
 }
 
 if (!MISSION_CONTROL_BOT_TOKEN) {
-  console.error('[str-clinic-worker] FATAL: MISSION_CONTROL_BOT_TOKEN not set');
+  console.error('[strclinic-listener] FATAL: MISSION_CONTROL_BOT_TOKEN not set');
 }
 if (!STR_CLINIC_BOT_TOKEN) {
-  console.warn('[str-clinic-worker] WARNING: STR_CLINIC_BOT_TOKEN not set, worker will idle');
+  console.warn('[strclinic-listener] WARNING: STR_CLINIC_BOT_TOKEN not set, worker will idle');
 }
 
 runStrClinicWorker();
 setInterval(runStrClinicWorker, 5 * 60 * 1000);
 
-console.log(`[str-clinic-worker] Started. Polling: ${STR_CLINIC_BOT_TOKEN ? 'active' : 'DISABLED (set STR_CLINIC_BOT_TOKEN)'}.`);
+console.log(`[strclinic-listener] Started. Polling: ${STR_CLINIC_BOT_TOKEN ? 'active' : 'DISABLED (set STR_CLINIC_BOT_TOKEN)'}.`);
