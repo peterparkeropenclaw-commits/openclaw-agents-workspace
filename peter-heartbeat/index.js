@@ -243,12 +243,9 @@ function buildFreeAuditInput(airbnbUrl) {
 // ─── Build minimal input JSON for paid audit ──────────────────────────────────
 function buildPaidAuditInput(airbnbUrl) {
   return {
-    listing_url:  airbnbUrl,
-    _scrape_url:  airbnbUrl,
-    property_name: 'Your property',
-    location:     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
-    date:         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
-    currency_code: airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
+    listing_url: airbnbUrl,
+    airbnb_url: airbnbUrl,
+    _scrape_url: airbnbUrl,
   };
 }
 
