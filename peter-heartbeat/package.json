@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "start:heartbeat": "node index.js",
-    "start:strclinic-listener": "node str-clinic-worker.js"
+    "start:strclinic-listener": "node str-clinic-worker.js",
+    "test:social-pipeline": "node -e \"const { buildFacebookPostPayload } = require('./social-post-pipeline'); const payload = buildFacebookPostPayload({ postText: 'Test post', graphicsDir: './social-graphics/facebook' }); console.log(JSON.stringify({ mode: payload.mode, attachments: payload.attachments.length, ready: payload.metadata.readyGraphicCount }, null, 2));\""
   },
   "dependencies": {
     "@octokit/rest": "^20.0.2",
