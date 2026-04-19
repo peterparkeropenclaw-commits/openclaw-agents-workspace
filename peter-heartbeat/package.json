@@ -2,6 +2,10 @@
   "name": "peter-heartbeat",
   "version": "1.0.0",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "str-clinic-worker": "node str-clinic-worker.js"
+  },
   "dependencies": {
     "@octokit/rest": "^20.0.2",
     "dotenv": "^16.0.3",
