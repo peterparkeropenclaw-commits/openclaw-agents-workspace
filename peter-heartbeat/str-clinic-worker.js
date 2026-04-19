@@ -80,6 +80,6 @@ if (!STR_CLINIC_BOT_TOKEN) {
 }
 
 runStrClinicWorker();
-setInterval(runStrClinicWorker, 5 * 60 * 1000);
+setInterval(runStrClinicWorker, 10 * 1000);
 
-console.log(`[strclinic-listener] Started. Polling: ${STR_CLINIC_BOT_TOKEN ? 'active' : 'DISABLED (set STR_CLINIC_BOT_TOKEN)'}.`);
+console.log(`[strclinic-listener] Started. Polling every 10s: ${STR_CLINIC_BOT_TOKEN ? 'active' : 'DISABLED (set STR_CLINIC_BOT_TOKEN)'}.`);
