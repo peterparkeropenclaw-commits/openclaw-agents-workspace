@@ -247,6 +247,15 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false, has
     console.log(`[${agentId}] Task ${taskId} finished (code ${code}): ${preview}`);
     if (stderr) console.error(`[${agentId}] stderr: ${stderr.slice(0, 200)}`);
 
+    if (agentId === 'client-delivery-director' && !hasResetSession) {
+      const freshSessionId = await resetAgentMainSession(agentId, sessionId);
+      if (freshSessionId) {
+        AGENTS[agentId].sessionId = freshSessionId;
+      } else {
+        console.error(`[${agentId}] Could not start a fresh session after task ${taskId}`);
+      }
+    }
+
     const shouldResetForOverflow = (
       agentId === 'client-delivery-director' &&
       !hasResetSession &&
@@ -255,9 +264,8 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false, has
 
     if (shouldResetForOverflow) {
       console.warn(`[${agentId}] Task ${taskId} hit context overflow, resetting session and retrying once`);
-      const freshSessionId = await resetAgentMainSession(agentId, sessionId);
+      const freshSessionId = AGENTS[agentId].sessionId;
       if (freshSessionId) {
-        AGENTS[agentId].sessionId = freshSessionId;
         setTimeout(() => fireAgentTurn(agentId, freshSessionId, message, taskId, false, true), 2000);
       } else {
         console.error(`[${agentId}] Could not start a fresh session after overflow for task ${taskId}`);
@@ -268,7 +276,7 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false, has
     // On failure, retry once without session pin to let the gateway route fresh
     if (code !== 0 && !isRetry) {
       console.log(`[${agentId}] Task ${taskId} exited ${code} — retrying in 10s without session pin`);
-      setTimeout(() => fireAgentTurn(agentId, sessionId, message, taskId, true, hasResetSession), 10000);
+      setTimeout(() => fireAgentTurn(agentId, AGENTS[agentId].sessionId, message, taskId, true, hasResetSession), 10000);
     }
   });
 
