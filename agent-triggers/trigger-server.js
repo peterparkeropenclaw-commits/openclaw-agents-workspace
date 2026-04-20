@@ -249,7 +249,6 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false, has
 
     const shouldResetForOverflow = (
       agentId === 'client-delivery-director' &&
-      code === 1 &&
       !hasResetSession &&
       isContextOverflow(combinedOutput)
     );
