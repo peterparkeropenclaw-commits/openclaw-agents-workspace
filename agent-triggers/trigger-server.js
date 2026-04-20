@@ -23,6 +23,10 @@ const { spawn } = require('child_process');
 const WORKSPACE = path.join(process.env.HOME, '.openclaw/workspace/memory');
 const OPENCLAW_STATE_DIR = path.join(process.env.HOME, '.openclaw');
 const OPENCLAW_BIN = 'openclaw';
+const CONTEXT_OVERFLOW_PATTERNS = [
+  /Context overflow/i,
+  /prompt too large/i,
+];
 
 // ─── Brief sanitisation ───────────────────────────────────────────────────────
 // Strip ASCII control characters (except \t and \n) from brief strings before
@@ -127,12 +131,89 @@ function resolveSessionId(agentId) {
   });
 }
 
+function getSessionsFile(agentId) {
+  return path.join(OPENCLAW_STATE_DIR, 'agents', agentId, 'sessions', 'sessions.json');
+}
+
+function isContextOverflow(output) {
+  return CONTEXT_OVERFLOW_PATTERNS.some((pattern) => pattern.test(output || ''));
+}
+
+function resetAgentMainSession(agentId, staleSessionId) {
+  return new Promise((resolve) => {
+    const sessionsFile = getSessionsFile(agentId);
+    const sessionDir = path.dirname(sessionsFile);
+    const now = new Date().toISOString().replace(/[:.]/g, '-');
+
+    try {
+      clearStaleLock(agentId, staleSessionId);
+
+      if (staleSessionId) {
+        const sessionFile = path.join(sessionDir, `${staleSessionId}.jsonl`);
+        const lockFile = `${sessionFile}.lock`;
+        const backupFile = path.join(sessionDir, `${staleSessionId}.jsonl.overflow-reset.${now}.bak`);
+
+        if (fs.existsSync(sessionFile)) {
+          fs.renameSync(sessionFile, backupFile);
+          console.warn(`[${agentId}] Archived saturated session to ${path.basename(backupFile)}`);
+        }
+
+        if (fs.existsSync(lockFile)) {
+          fs.unlinkSync(lockFile);
+        }
+      }
+
+      if (fs.existsSync(sessionsFile)) {
+        const sessions = JSON.parse(fs.readFileSync(sessionsFile, 'utf8'));
+        const mainKey = `agent:${agentId}:main`;
+        if (sessions[mainKey]?.sessionId === staleSessionId) {
+          delete sessions[mainKey];
+          fs.writeFileSync(sessionsFile, `${JSON.stringify(sessions, null, 2)}\n`);
+          console.warn(`[${agentId}] Cleared pinned main session mapping for overflowed session ${staleSessionId}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[${agentId}] Failed to reset saturated session ${staleSessionId}: ${err.message}`);
+      return resolve(null);
+    }
+
+    const bootstrap = spawn(OPENCLAW_BIN, [
+      'agent',
+      '--agent', agentId,
+      '--message', 'Session reset after context overflow. Start a fresh main session and reply with READY only.',
+      '--timeout', '120',
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    bootstrap.stdout.on('data', (d) => { stdout += d.toString(); });
+    bootstrap.stderr.on('data', (d) => { stderr += d.toString(); });
+    bootstrap.on('close', async (code) => {
+      if (code !== 0) {
+        console.error(`[${agentId}] Failed to bootstrap fresh session after overflow (code ${code}): ${(stderr || stdout).slice(0, 400)}`);
+        return resolve(null);
+      }
+      const newSessionId = await resolveSessionId(agentId);
+      if (newSessionId) {
+        console.log(`[${agentId}] Started fresh session after overflow: ${newSessionId}`);
+      }
+      resolve(newSessionId);
+    });
+    bootstrap.on('error', (err) => {
+      console.error(`[${agentId}] Bootstrap spawn error after overflow: ${err.message}`);
+      resolve(null);
+    });
+  });
+}
+
 // ─── Fire-and-forget agent turn ──────────────────────────────────────────────
 // Targets the permanent session via --session-id when available.
 // Falls back to --agent <id> (which routes to the same main session).
 // On non-zero exit, retries once after a 10s delay without --session-id so the
 // gateway can pick the session fresh (Issue 1 / Issue 2).
-function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false) {
+function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false, hasResetSession = false) {
   // Clear any stale PID lock on the target session before attempting (Issue 2)
   clearStaleLock(agentId, sessionId);
 
@@ -160,14 +241,35 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false) {
   proc.stdout.on('data', (d) => { stdout += d.toString(); });
   proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-  proc.on('close', (code) => {
+  proc.on('close', async (code) => {
+    const combinedOutput = `${stdout}\n${stderr}`;
     const preview = stdout.slice(0, 200).replace(/\n/g, ' ');
     console.log(`[${agentId}] Task ${taskId} finished (code ${code}): ${preview}`);
     if (stderr) console.error(`[${agentId}] stderr: ${stderr.slice(0, 200)}`);
+
+    const shouldResetForOverflow = (
+      agentId === 'client-delivery-director' &&
+      code === 1 &&
+      !hasResetSession &&
+      isContextOverflow(combinedOutput)
+    );
+
+    if (shouldResetForOverflow) {
+      console.warn(`[${agentId}] Task ${taskId} hit context overflow, resetting session and retrying once`);
+      const freshSessionId = await resetAgentMainSession(agentId, sessionId);
+      if (freshSessionId) {
+        AGENTS[agentId].sessionId = freshSessionId;
+        setTimeout(() => fireAgentTurn(agentId, freshSessionId, message, taskId, false, true), 2000);
+      } else {
+        console.error(`[${agentId}] Could not start a fresh session after overflow for task ${taskId}`);
+      }
+      return;
+    }
+
     // On failure, retry once without session pin to let the gateway route fresh
     if (code !== 0 && !isRetry) {
       console.log(`[${agentId}] Task ${taskId} exited ${code} — retrying in 10s without session pin`);
-      setTimeout(() => fireAgentTurn(agentId, sessionId, message, taskId, true), 10000);
+      setTimeout(() => fireAgentTurn(agentId, sessionId, message, taskId, true, hasResetSession), 10000);
     }
   });
 
@@ -175,7 +277,7 @@ function fireAgentTurn(agentId, sessionId, message, taskId, isRetry = false) {
     console.error(`[${agentId}] Spawn error for task ${taskId}: ${err.message}`);
     if (!isRetry) {
       console.log(`[${agentId}] Retrying via fallback spawn (no session-id)...`);
-      setTimeout(() => fireAgentTurn(agentId, sessionId, message, taskId, true), 5000);
+      setTimeout(() => fireAgentTurn(agentId, sessionId, message, taskId, true, hasResetSession), 5000);
     }
   });
 
