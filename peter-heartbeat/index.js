@@ -5,6 +5,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env'), override: true })
 
 const { Octokit } = require('@octokit/rest');
 const fs   = require('fs');
+const { scheduleDailyFacebookSocialJob } = require('./social-post-pipeline');
 
 // ─── Telegram config ─────────────────────────────────────────────────────────
 // Mission Control (group chat) — all agent output goes here
@@ -223,4 +224,11 @@ setTimeout(() => {
 runHeartbeat();
 setInterval(runHeartbeat, 5 * 60 * 1000);
 
-console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener.');
+scheduleDailyFacebookSocialJob({
+  stateLoader: loadState,
+  saveState,
+  sendTelegram,
+  logger: console,
+});
+
+console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook social pipeline scheduling active.');

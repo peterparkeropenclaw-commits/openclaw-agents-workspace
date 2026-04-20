@@ -71,103 +71,32 @@ function createStrClinicOrchestrator({
     }
   }
 
-  function runGenerator(scriptPath, inputJsonPath) {
-    return new Promise((resolve, reject) => {
-      const proc = spawn(process.execPath, [scriptPath, '--input', inputJsonPath], {
-        cwd: path.dirname(scriptPath),
-        env: {
-          ...process.env,
-          GOOGLE_APPLICATION_CREDENTIALS: googleCreds,
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-
-      let output = '';
-      let settled = false;
-      let stdoutBuffer = '';
-      let stderrBuffer = '';
-
-      const finish = (err, value = null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        try { fs.unlinkSync(inputJsonPath); } catch {}
-        if (err) reject(err);
-        else resolve(value);
-      };
-
-      const flushBuffered = (buffer, logger) => {
-        const lines = buffer.split(/\r?\n|\r/g);
-        const remainder = lines.pop() || '';
-        lines.filter((line) => line.trim()).forEach((line) => logger('[generator]', line));
-        return remainder;
-      };
-
-      if (proc.stdout) {
-        proc.stdout.setEncoding('utf8');
-        proc.stdout.on('data', (chunk) => {
-          output += chunk;
-          stdoutBuffer = flushBuffered(stdoutBuffer + chunk, console.log);
-        });
-      } else {
-        console.error('[generator] stdout stream unavailable');
-      }
-
-      if (proc.stderr) {
-        proc.stderr.setEncoding('utf8');
-        proc.stderr.on('data', (chunk) => {
-          output += chunk;
-          stderrBuffer = flushBuffered(stderrBuffer + chunk, console.error);
-        });
-      } else {
-        console.error('[generator] stderr stream unavailable');
-      }
-
-      proc.on('spawn', () => {
-        console.log(`[generator] Spawned PID ${proc.pid} for ${path.basename(scriptPath)}`);
-      });
-
-      proc.on('error', (err) => {
-        finish(new Error(`Generator process error: ${err.message}`));
-      });
-
-      proc.on('close', (code, signal) => {
-        stdoutBuffer = flushBuffered(stdoutBuffer, console.log);
-        stderrBuffer = flushBuffered(stderrBuffer, console.error);
-        if (stdoutBuffer.trim()) console.log('[generator]', stdoutBuffer.trim());
-        if (stderrBuffer.trim()) console.error('[generator]', stderrBuffer.trim());
-        console.log(`[generator] Process exited with code ${code}${signal ? ` (signal ${signal})` : ''}`);
-        if (code !== 0) {
-          finish(new Error(`Generator exited ${code}: ${output.slice(-2000)}`));
-          return;
-        }
-        const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-        const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map((matchItem) => matchItem[1]);
-        const localPdfPath = output.match(/^Local PDF at:\s+(.+)$/m)?.[1] || null;
-        const telemetryPath = output.match(/^Run telemetry saved:\s+(.+)$/m)?.[1] || null;
-
-        let telemetry = null;
-        if (telemetryPath && fs.existsSync(telemetryPath)) {
-          try {
-            telemetry = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
-          } catch (err) {
-            console.warn('[audit] failed to read generator telemetry:', err.message);
-          }
-        }
-
-        finish(null, {
-          driveLink: match ? match[0] : null,
-          qaErrors,
-          localPdfPath,
-          telemetry,
-        });
-      });
-
-      const timeout = setTimeout(() => {
-        proc.kill();
-        finish(new Error('Generator timeout (5min)'));
-      }, 300_000);
+  function runGenerator(scriptPath, inputJsonPath, notifyEnv) {
+    // Spawn with detached:true so the generator becomes an independent process group.
+    // If PM2 restarts the parent (strclinic-listener), the generator survives.
+    // The generator is responsible for sending its own Telegram completion message.
+    const proc = spawn(process.execPath, [scriptPath, '--input', inputJsonPath], {
+      cwd: path.dirname(scriptPath),
+      detached: true,
+      env: {
+        ...process.env,
+        GOOGLE_APPLICATION_CREDENTIALS: googleCreds,
+        // Pass Telegram credentials so the generator can self-notify on completion
+        ...notifyEnv,
+      },
+      stdio: 'ignore',
     });
+
+    // unref() lets the parent exit (or be restarted) without waiting for the child
+    proc.unref();
+
+    if (proc.pid) {
+      console.log(`[generator] Spawned detached PID ${proc.pid} for ${path.basename(scriptPath)} — generator will self-notify on completion`);
+    } else {
+      console.error('[generator] Failed to obtain PID — spawn may have failed');
+    }
+
+    return proc.pid || null;
   }
 
   function buildAuditRunningMessage(typeLabel, airbnbUrl, fromUsername, taskId) {
@@ -219,7 +148,7 @@ function createStrClinicOrchestrator({
 
     console.log(`[audit] ${typeLabel} triggered by ${fromUsername} for ${airbnbUrl}`);
 
-    const cdrBrief = `${typeLabel} requested via STR Clinic listener bot.\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask ID: ${taskId}\n\nGenerator running — will report Drive link to Mission Control when complete.`;
+    const cdrBrief = `${typeLabel} requested via STR Clinic listener bot.\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask ID: ${taskId}\n\nGenerator running (detached) — will self-notify Telegram on completion.`;
     notifyCDR(taskId, cdrBrief).catch(() => {});
 
     await sendTelegram(buildAuditRunningMessage(typeLabel, airbnbUrl, fromUsername, taskId));
@@ -228,26 +157,24 @@ function createStrClinicOrchestrator({
     const tmpInput = `/tmp/str-audit-${taskId}.json`;
     fs.writeFileSync(tmpInput, JSON.stringify(inputData, null, 2));
 
-    try {
-      const { driveLink, qaErrors, localPdfPath, telemetry } = await runGenerator(script, tmpInput);
-      const pdfUploadAttempted = Boolean(telemetry?.uploads?.pdf?.attempted);
-      const htmlUploadAttempted = Boolean(telemetry?.uploads?.html?.attempted);
-      const uploadAttempted = pdfUploadAttempted || htmlUploadAttempted;
+    // Build env vars for the detached generator so it can self-notify Telegram on completion.
+    // The generator reads these at startup and sends its own message when done.
+    const notifyEnv = {
+      STR_NOTIFY_TASK_ID:    taskId,
+      STR_NOTIFY_TYPE_LABEL: typeLabel,
+      STR_NOTIFY_URL:        airbnbUrl,
+      STR_NOTIFY_FOLDER:     folder,
+      // Telegram credentials — generator needs these to send the completion message
+      MISSION_CONTROL_BOT_TOKEN: process.env.MISSION_CONTROL_BOT_TOKEN || '',
+      MISSION_CONTROL_CHAT_ID:   process.env.MISSION_CONTROL_CHAT_ID   || '',
+    };
 
-      if (driveLink) {
-        console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-        await sendTelegram(buildAuditReadyMessage(typeLabel, airbnbUrl, taskId, driveLink, qaErrors));
-      } else if (qaErrors.length > 0 && !uploadAttempted) {
-        console.warn(`[audit] ${typeLabel} generated locally but upload was skipped after QA failure`);
-        await sendTelegram(buildAuditGeneratedLocallyMessage(typeLabel, airbnbUrl, taskId, qaErrors, localPdfPath));
-      } else {
-        console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
-        await sendTelegram(buildAuditGeneratedWithoutLinkMessage(typeLabel, airbnbUrl, taskId, localPdfPath, folder));
-      }
-    } catch (err) {
-      console.error(`[audit] ${typeLabel} failed:`, err.message);
-      await sendTelegram(buildAuditFailedMessage(typeLabel, airbnbUrl, taskId, err));
+    const pid = runGenerator(script, tmpInput, notifyEnv);
+    if (!pid) {
+      console.error(`[audit] ${typeLabel} generator failed to spawn`);
+      await sendTelegram(buildAuditFailedMessage(typeLabel, airbnbUrl, taskId, new Error('Generator failed to spawn — no PID returned')));
     }
+    // Generator is detached — completion notification is handled by generate-report.js itself
   }
 
   async function fetchUpdates() {
