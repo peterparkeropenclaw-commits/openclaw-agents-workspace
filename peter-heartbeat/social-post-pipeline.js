@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { uploadFacebookPackToDrive } = require('./drive-uploader');
 
 const DEFAULT_SCHEDULE = '08:00';
 const DEFAULT_OUTPUT_ROOT = path.join(__dirname, 'output', 'facebook-packs');
@@ -294,6 +295,7 @@ async function notifyBrandonSuccess(pack, { sendTelegram }) {
     `Date: ${pack.dateKey}`,
     `Posts: ${pack.posts.length}`,
     `Creatives: ${pack.posts.length}`,
+    `Drive folder: ${pack.drive?.folderUrl ? `<a href="${pack.drive.folderUrl}">open pack</a>` : 'not available'}`,
     `Deck: <code>${pack.deckPath}</code>`,
     `Folder: <code>${pack.packDir}</code>`,
     '',
@@ -314,6 +316,7 @@ async function notifyBrandonFailure(error, context, { sendTelegram }) {
   ];
 
   if (context.packDir) lines.push(`Folder: <code>${context.packDir}</code>`);
+  if (context.deckPath) lines.push(`Deck: <code>${context.deckPath}</code>`);
 
   await sendTelegram(lines.join('\n'), { chatId: process.env.BRANDON_TELEGRAM_CHAT_ID || DEFAULT_BRANDON_CHAT_ID });
 }
@@ -343,6 +346,9 @@ async function runFacebookSocialPostJob({
       logger,
     });
 
+    const drive = await uploadFacebookPackToDrive(pack.packDir);
+    pack.drive = drive;
+
     state.lastFacebookPackRuns[dateKey] = {
       ranAt: now.toISOString(),
       status: 'success',
@@ -350,6 +356,8 @@ async function runFacebookSocialPostJob({
       deckPath: pack.deckPath,
       postCount: pack.posts.length,
       creativeCount: pack.posts.length,
+      driveFolderId: drive.folderId,
+      driveFolderUrl: drive.folderUrl,
     };
     saveState(state);
 
@@ -368,6 +376,35 @@ async function runFacebookSocialPostJob({
     saveState(state);
 
     await notifyBrandonFailure(error, { dateKey }, { sendTelegram });
+    throw error;
+  }
+}
+
+async function uploadExistingFacebookPack({
+  dateKey = formatLondonDateParts(new Date()).isoDate,
+  outputRoot = process.env.FACEBOOK_SOCIAL_OUTPUT_ROOT || DEFAULT_OUTPUT_ROOT,
+  sendTelegram,
+  logger = console,
+}) {
+  const packDir = path.join(outputRoot, dateKey);
+  const deckPath = path.join(packDir, 'facebook-copy-deck.md');
+
+  try {
+    const drive = await uploadFacebookPackToDrive(packDir);
+    const manifest = JSON.parse(fs.readFileSync(path.join(packDir, 'manifest.json'), 'utf8'));
+    const pack = {
+      dateKey,
+      packDir,
+      deckPath,
+      posts: manifest.posts || [],
+      drive,
+    };
+
+    await notifyBrandonSuccess(pack, { sendTelegram });
+    logger.log(`[social] Existing Facebook pack uploaded to Drive: ${drive.folderUrl}`);
+    return { pack };
+  } catch (error) {
+    await notifyBrandonFailure(error, { dateKey, packDir, deckPath }, { sendTelegram });
     throw error;
   }
 }
@@ -420,4 +457,5 @@ module.exports = {
   createFacebookPack,
   runFacebookSocialPostJob,
   scheduleDailyFacebookSocialJob,
+  uploadExistingFacebookPack,
 };
