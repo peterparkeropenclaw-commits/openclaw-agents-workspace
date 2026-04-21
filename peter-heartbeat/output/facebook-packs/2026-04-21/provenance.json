@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-04-21T07:00:00.000Z",
+  "date": "2026-04-21",
+  "copyReference": "/Users/robotmac/.openclaw/workspace/memory/DES-207-facebook-copy-deck/str-clinic-facebook-post-copy-deck.md",
+  "brandReference": "/Users/robotmac/.openclaw/workspace/design-references/str-clinic/STR-CLINIC-DESIGN-DOCTRINE.md",
+  "creativeSources": [
+    {
+      "id": "post-01",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-205-facebook-public-assets/des-205-post-01-positioning-before-price.png"
+    },
+    {
+      "id": "post-02",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-02-photo-order-trust-rebuild.png"
+    },
+    {
+      "id": "post-03",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-03-full-calendar-right-reasons-rebuild.png"
+    }
+  ],
+  "checksum": "aa4fdaceddeb6831561ec3ce280b3531d8012fd7"
+}

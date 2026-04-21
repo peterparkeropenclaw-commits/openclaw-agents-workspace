@@ -231,4 +231,4 @@ scheduleDailyFacebookSocialJob({
   logger: console,
 });
 
-console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook social pipeline scheduling active.');
+console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook pack scheduling active at 08:00 Europe/London by default.');
