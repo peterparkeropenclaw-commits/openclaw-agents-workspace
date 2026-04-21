@@ -1,0 +1,56 @@
+{
+  "generatedAt": "2026-04-21T07:00:00.000Z",
+  "timezone": "Europe/London",
+  "date": "2026-04-21",
+  "outputDir": "/Users/robotmac/workspace/peter-heartbeat/output/facebook-packs/2026-04-21",
+  "posts": [
+    {
+      "index": 1,
+      "id": "post-01",
+      "title": "Pricing vs positioning",
+      "textFile": "posts/01-post-01.md",
+      "creativeFile": "creatives/01-pricing-vs-positioning.png",
+      "hashtags": [
+        "#AirbnbHost",
+        "#UKHosts",
+        "#ShortTermRental",
+        "#AirbnbTips",
+        "#HolidayLet",
+        "#STRStrategy"
+      ],
+      "headline": "A pricing problem is often a positioning problem first."
+    },
+    {
+      "index": 2,
+      "id": "post-02",
+      "title": "Photo order builds trust",
+      "textFile": "posts/02-post-02.md",
+      "creativeFile": "creatives/02-photo-order-builds-trust.png",
+      "hashtags": [
+        "#AirbnbPhotos",
+        "#UKAirbnb",
+        "#ShortStayHost",
+        "#HolidayCottage",
+        "#AirbnbAdvice",
+        "#STRMarketing"
+      ],
+      "headline": "A strong first photo means less if the next ones weaken trust."
+    },
+    {
+      "index": 3,
+      "id": "post-03",
+      "title": "Full calendar, wrong reason",
+      "textFile": "posts/03-post-03.md",
+      "creativeFile": "creatives/03-full-calendar-right-reasons.png",
+      "hashtags": [
+        "#AirbnbHosting",
+        "#UKHolidayLets",
+        "#RevenueStrategy",
+        "#ShortTermRentalTips",
+        "#AirbnbBusiness",
+        "#HostEducation"
+      ],
+      "headline": "A full calendar can still mean the price was too easy to say yes to."
+    }
+  ]
+}

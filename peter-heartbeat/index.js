@@ -5,27 +5,12 @@ require('dotenv').config({ path: path.join(__dirname, '.env'), override: true })
 
 const { Octokit } = require('@octokit/rest');
 const fs   = require('fs');
-const { spawn } = require('child_process');
+const { scheduleDailyFacebookSocialJob } = require('./social-post-pipeline');
 
 // ─── Telegram config ─────────────────────────────────────────────────────────
 // Mission Control (group chat) — all agent output goes here
 const MISSION_CONTROL_BOT_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN;
 const MISSION_CONTROL_CHAT_ID   = process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
-
-// STR Clinic dedicated listener bot — eliminates getUpdates race with PeterParkerOpenClawBot
-const STR_CLINIC_BOT_TOKEN = process.env.STR_CLINIC_BOT_TOKEN;
-
-// CDR webhook auth token (matches TRIGGER_AUTH_TOKEN in trigger-server .env)
-const CDR_AUTH_TOKEN  = process.env.TRIGGER_AUTH_TOKEN || process.env.CDR_AUTH_TOKEN || '';
-const CDR_WEBHOOK_URL = 'http://localhost:3104/task';
-
-// ─── Audit generator paths ───────────────────────────────────────────────────
-const FREE_AUDIT_SCRIPT  = path.join(process.env.HOME, 'workspace/str-clinic-free-audit-generator/generate-free-audit.js');
-const PAID_AUDIT_SCRIPT  = path.join(process.env.HOME, 'workspace/str-clinic-pdf-generator/generate-report.js');
-const GOOGLE_CREDS       = path.join(process.env.HOME, 'workspace/full-take-outreach/credentials.json');
-
-const FREE_DRIVE_FOLDER  = '1nMysoqPplQT1S1C4f_Gjj75u_PSVEgpr';
-const PAID_DRIVE_FOLDER  = '12RlJRy_U9lD0mPfH4WVcEYrwdXcSpWar';
 
 // ─── Project config ──────────────────────────────────────────────────────────
 const LIVE_URLS = {
@@ -64,52 +49,32 @@ function saveState(s) {
 function loadCooldowns()  { try { return JSON.parse(fs.readFileSync(COOLDOWNS_FILE, 'utf8')); } catch { return {}; } }
 function saveCooldowns(c) { try { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); } catch (e) { console.error('[state] saveCooldowns error:', e.message); } }
 
-// ─── Telegram HTML sanitiser ──────────────────────────────────────────────────
-function sanitiseTelegramHTML(text) {
-  if (typeof text !== 'string') return '';
-  // Allowed tags: b, i, u, s, code, pre, a
-  // Remove any other tags entirely (including attributes) but keep their text content
-  return text.replace(/<([^>]+)>/g, (m, inner) => {
-    const tagMatch = inner.match(/^\s*\/?\s*([a-zA-Z0-9]+)\b/);
-    if (!tagMatch) return '';
-    const tag = tagMatch[1].toLowerCase();
-    const allowed = ['b','i','u','s','code','pre','a'];
-    if (allowed.includes(tag)) {
-      // For <a>, preserve href attribute only and sanitize it
-      if (tag === 'a') {
-        const hrefMatch = inner.match(/href\s*=\s*"([^"]+)"/i) || inner.match(/href\s*=\s*'([^']+)'/i);
-        if (hrefMatch) {
-          const href = hrefMatch[1].replace(/"/g, '');
-          return `<a href="${href}">`;
-        }
-        // If no href, strip tag
-        return '';
-      }
-      return `<${tag}>`;
-    }
-    return '';
-  }).replace(/<\s*\/\s*([a-zA-Z0-9]+)\s*>/g, (m, tag) => {
-    const t = tag.toLowerCase();
-    const allowed = ['b','i','u','s','code','pre','a'];
-    return allowed.includes(t) ? `</${t}>` : '';
-  });
+// ─── Telegram HTML helpers ────────────────────────────────────────────────────
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function stripHtml(text) {
+  return String(text || '').replace(/<[^>]+>/g, '');
 }
 
 // ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
-    const safe = sanitiseTelegramHTML(message).replace(/[_*`\[\]()~+=|{}!]/g, '');
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: safe, parse_mode: 'HTML' }),
+      body: JSON.stringify({ chat_id: chatId, text: String(message || ''), parse_mode: 'HTML' }),
     });
     const data = await res.json();
     if (data.ok) return true;
     // HTML parse failed — retry as plain text so the message always gets through
     console.warn('[telegram] HTML send failed, retrying as plain text:', data.description);
-    const plain = message.replace(/<[^>]+>/g, '').replace(/[_*`\[\]()~+=|{}!]/g, '');
+    const plain = stripHtml(message);
     const res2 = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -119,215 +84,6 @@ async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId
     if (!data2.ok) console.error('[telegram] plain text send also failed:', data2.description);
     return data2.ok;
   } catch (err) { console.error('[telegram] error:', err.message); return false; }
-}
-
-// ─── CDR webhook notify ────────────────────────────────────────────────────────
-async function notifyCDR(taskId, brief) {
-  try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (CDR_AUTH_TOKEN) headers['Authorization'] = `Bearer ${CDR_AUTH_TOKEN}`;
-    const res = await fetch(CDR_WEBHOOK_URL, {
-      method:  'POST',
-      headers,
-      body: JSON.stringify({ task_id: taskId, brief, priority: 'high', from: 'str-clinic-listener' }),
-    });
-    if (!res.ok) console.error('[cdr-webhook] POST failed:', res.status, await res.text());
-    else console.log('[cdr-webhook] notified:', taskId);
-  } catch (err) {
-    console.error('[cdr-webhook] error:', err.message);
-  }
-}
-
-// ─── Run generator script ─────────────────────────────────────────────────────
-// Returns Drive link extracted from stdout, or null on failure.
-function runGenerator(scriptPath, inputJsonPath, extraEnv = {}) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn('node', [scriptPath, '--input', inputJsonPath], {
-      cwd: path.dirname(scriptPath),
-      env: {
-        ...process.env,
-        GOOGLE_APPLICATION_CREDENTIALS: GOOGLE_CREDS,
-        CDR_WEBHOOK_URL: process.env.CDR_WEBHOOK_URL || CDR_WEBHOOK_URL,
-        TRIGGER_AUTH_TOKEN: process.env.TRIGGER_AUTH_TOKEN || CDR_AUTH_TOKEN,
-        CDR_AUTH_TOKEN: process.env.CDR_AUTH_TOKEN || CDR_AUTH_TOKEN,
-        ...extraEnv,
-      },
-    });
-
-    let output = '';
-    proc.stdout.on('data', (d) => { output += d.toString(); });
-    proc.stderr.on('data', (d) => { output += d.toString(); });
-
-    proc.on('close', (code) => {
-      try { fs.unlinkSync(inputJsonPath); } catch {}
-      if (code !== 0) {
-        reject(new Error(`Generator exited ${code}: ${output.slice(-300)}`));
-        return;
-      }
-      const match = output.match(/https:\/\/drive\.google\.com\/[^\s]+/);
-      const qaErrors = [...output.matchAll(/^QA_ERROR: (.+)$/gm)].map(m => m[1]);
-      resolve({ driveLink: match ? match[0] : null, qaErrors });
-    });
-
-    setTimeout(() => { proc.kill(); reject(new Error('Generator timeout (10min)')); }, 600_000);
-  });
-}
-
-// ─── Build minimal input JSON for free audit ──────────────────────────────────
-function buildFreeAuditInput(airbnbUrl) {
-  return {
-    listing_url:                  airbnbUrl,
-    property_name:                'Your property',
-    location:                     airbnbUrl.includes('airbnb.co.uk') ? 'UK' : 'Unknown',
-    date:                         new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
-    currency_code:                airbnbUrl.includes('airbnb.co.uk') ? 'GBP' : 'USD',
-    overall_score:                47,
-    score_narrative:              'Audit in progress — score will be personalised by Brandon.',
-    monthly_revenue_gap_estimate: airbnbUrl.includes('airbnb.co.uk') ? '£180–£320/month' : '$200–$380/month',
-    top_3_issues: [
-      { issue: 'Personalised audit pending', description: 'Brandon will review and update these findings.', revenue_impact: 'Est. impact: TBD' },
-    ],
-    current_title:     'Retrieving from listing...',
-    rewritten_title:   'Personalised title to be added by Brandon',
-    title_rationale:   'To be added by Brandon.',
-    opportunity_summary: 'Full opportunity analysis to follow.',
-  };
-}
-
-// ─── Build minimal input JSON for paid audit ──────────────────────────────────
-function buildPaidAuditInput(airbnbUrl) {
-  return {
-    listing_url: airbnbUrl,
-    airbnb_url:  airbnbUrl,
-    _scrape_url: airbnbUrl,
-  };
-}
-
-// ─── Audit dedup: prevent double-processing same URL within 10 minutes ────────
-const recentAudits = new Map(); // url+type → timestamp
-function isDuplicate(url, type) {
-  const key = `${type}:${url}`;
-  const last = recentAudits.get(key);
-  if (last && Date.now() - last < 10 * 60 * 1000) return true;
-  recentAudits.set(key, Date.now());
-  return false;
-}
-
-// ─── Main audit trigger ────────────────────────────────────────────────────────
-async function triggerAudit(airbnbUrl, type, fromUsername) {
-  const taskId    = `STR-${type.toUpperCase()}-${Date.now()}`;
-  const typeLabel = type === 'free' ? 'Free Audit' : 'Paid Report';
-  const script    = type === 'free' ? FREE_AUDIT_SCRIPT : PAID_AUDIT_SCRIPT;
-  const folder    = type === 'free' ? FREE_DRIVE_FOLDER : PAID_DRIVE_FOLDER;
-
-  console.log(`[audit] ${typeLabel} triggered by ${fromUsername} for ${airbnbUrl}`);
-
-  // 1. Notify CDR webhook (fire-and-forget — don't block on it)
-  const cdrBrief = `${typeLabel} requested via STR Clinic listener bot.\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask ID: ${taskId}\n\nGenerator running — will report Drive link to Mission Control when complete.`;
-  notifyCDR(taskId, cdrBrief).catch(() => {});
-
-  // 2. Acknowledge on Mission Control immediately
-  await sendTelegram(
-    `📋 <b>STR Clinic ${typeLabel}</b>\n\nURL: ${airbnbUrl}\nRequested by: ${fromUsername}\nTask: ${taskId}\n\nGenerator running...`
-  );
-
-  // 3. Write input JSON
-  const inputData = type === 'free' ? buildFreeAuditInput(airbnbUrl) : buildPaidAuditInput(airbnbUrl);
-  const tmpInput  = `/tmp/str-audit-${taskId}.json`;
-  fs.writeFileSync(tmpInput, JSON.stringify(inputData, null, 2));
-
-  // 4. Run generator (long-running — up to 5 min)
-  try {
-    const generatorEnv = type === 'paid'
-      ? {
-          REPORTS_DRIVE_FOLDER_ID: process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
-          REPORTS_HTML_FOLDER_ID: process.env.REPORTS_HTML_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
-          STR_CLINIC_REPORTS_FOLDER_ID: process.env.STR_CLINIC_REPORTS_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || PAID_DRIVE_FOLDER,
-        }
-      : {};
-
-    const { driveLink, qaErrors } = await runGenerator(script, tmpInput, generatorEnv);
-
-    if (driveLink) {
-      console.log(`[audit] ${typeLabel} complete: ${driveLink}`);
-      let msg = `✅ <b>STR Clinic ${typeLabel} ready</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}`;
-      if (qaErrors.length > 0) {
-        msg += `\n\n⚠️ QA flagged ${qaErrors.length} issue${qaErrors.length !== 1 ? 's' : ''} — review before sending to customer\n${qaErrors.map(e => `• ${e}`).join('\n')}`;
-      }
-      msg += `\n\nDrive: ${driveLink}`;
-      await sendTelegram(msg);
-    } else {
-      console.warn(`[audit] ${typeLabel} complete but no Drive link captured`);
-      await sendTelegram(
-        `⚠️ <b>STR Clinic ${typeLabel} generated</b> — Drive link not captured\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nCheck Drive folder: https://drive.google.com/drive/folders/${folder}`
-      );
-    }
-  } catch (err) {
-    console.error(`[audit] ${typeLabel} failed:`, err.message);
-    await sendTelegram(
-      `❌ <b>STR Clinic ${typeLabel} failed</b>\n\nURL: ${airbnbUrl}\nTask: ${taskId}\n\nError: ${err.message.slice(0, 200)}`
-    );
-  }
-}
-
-// ─── STR Clinic listener — polls dedicated bot for incoming messages ───────────
-let strClinicOffset = 0;
-
-async function pollStrClinicUpdates() {
-  if (!STR_CLINIC_BOT_TOKEN) return;
-
-  let data;
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${STR_CLINIC_BOT_TOKEN}/getUpdates?offset=${strClinicOffset}&timeout=0`
-    );
-    data = await res.json();
-    if (!data.ok) {
-      console.error('[str-clinic-listener] getUpdates failed:', data.description);
-      return;
-    }
-  } catch (err) {
-    console.error('[str-clinic-listener] error:', err.message);
-    return;
-  }
-
-  for (const update of data.result) {
-    strClinicOffset = update.update_id + 1;
-    const msg = update.message;
-    if (!msg) continue;
-
-    const text     = (msg.text || '').trim();
-    const from     = msg.from?.username || msg.from?.first_name || 'unknown';
-    const lower    = text.toLowerCase();
-
-    // Extract Airbnb URL — supports airbnb.com, airbnb.co.uk, airbnb.com.au, etc.
-    const urlMatch = text.match(/https?:\/\/(?:www\.)?airbnb\.[a-z.]+\/rooms\/[^\s]+/i);
-
-    const isFreeAudit = /free\s+audit/i.test(lower);
-    const isPaidAudit = /paid\s+audit/i.test(lower);
-
-    if ((isFreeAudit || isPaidAudit) && urlMatch) {
-      const airbnbUrl = urlMatch[0].replace(/[<>]/g, '').split('?')[0]; // strip tracking params
-      const type      = isPaidAudit ? 'paid' : 'free';
-
-      if (isDuplicate(airbnbUrl, type)) {
-        console.log(`[str-clinic-listener] Duplicate ${type} audit request ignored: ${airbnbUrl}`);
-        continue;
-      }
-
-      // Fire audit async — don't await (polling must stay responsive)
-      triggerAudit(airbnbUrl, type, from).catch((err) => {
-        console.error('[str-clinic-listener] triggerAudit error:', err.message);
-      });
-    } else if (isFreeAudit || isPaidAudit) {
-      // Keyword detected but no Airbnb URL — request clarification via Mission Control
-      const auditType = isPaidAudit ? 'paid audit' : 'free audit';
-      console.log(`[str-clinic-listener] ${auditType} keyword from ${from} but no Airbnb URL found`);
-      await sendTelegram(
-        `⚠️ STR Clinic: "${auditType}" keyword received from ${from} but no Airbnb URL found in message.\n\nMessage: ${text.slice(0, 200)}`
-      ).catch(() => {});
-    }
-  }
 }
 
 // ─── Control Plane notify (deploy hooks) ──────────────────────────────────────
@@ -362,7 +118,7 @@ async function sendMorningBriefing() {
     try {
       const { data: prs } = await octokit.pulls.list({ owner: OWNER, repo, state: 'open' });
       openPRCount += prs.length;
-      prs.forEach((pr) => prTitles.push(`#${pr.number} ${pr.title}`));
+      prs.forEach((pr) => prTitles.push(`#${pr.number} ${escapeHtml(pr.title)}`));
     } catch {}
   }
 
@@ -374,7 +130,7 @@ async function sendMorningBriefing() {
     if (cpRes.ok) {
       const tasks = await cpRes.json();
       lines.push(`\nACTIVE TASKS (CP): ${tasks.length}`);
-      tasks.slice(0, 5).forEach((t) => lines.push(`  [${t.id}] ${t.title} — ${t.state}`));
+      tasks.slice(0, 5).forEach((t) => lines.push(`  [${escapeHtml(t.id)}] ${escapeHtml(t.title)} — ${escapeHtml(t.state)}`));
     } else {
       lines.push('\nControl Plane: unreachable');
     }
@@ -396,8 +152,6 @@ async function runHeartbeat() {
   console.log(`[heartbeat] Running at ${new Date().toISOString()}`);
 
   try {
-    await pollStrClinicUpdates();
-
     const res = await fetch('http://localhost:3210/tasks/active');
     if (!res.ok) { console.error('[heartbeat] Control Plane unreachable:', res.status); return; }
 
@@ -430,7 +184,7 @@ async function runHeartbeat() {
           cooldownsDirty = true;
           try {
             await sendTelegram(
-              `⏱ Stale task detected\nTask: ${task.id}\nTitle: ${task.title}\nState: ${task.state}\nLast update: ${task.updated_at}`
+              `⏱ Stale task detected\nTask: ${escapeHtml(task.id)}\nTitle: ${escapeHtml(task.title)}\nState: ${escapeHtml(task.state)}\nLast update: ${escapeHtml(task.updated_at)}`
             );
           } catch (err) { console.error('[heartbeat] telegram send error:', err.message); }
         }
@@ -454,10 +208,6 @@ async function runHeartbeat() {
 if (!MISSION_CONTROL_BOT_TOKEN) {
   console.error('[peter-heartbeat] FATAL: MISSION_CONTROL_BOT_TOKEN not set — briefings and alerts will fail.');
 }
-if (!STR_CLINIC_BOT_TOKEN) {
-  console.warn('[peter-heartbeat] WARNING: STR_CLINIC_BOT_TOKEN not set — STR Clinic listener disabled.');
-}
-
 // ─── Schedule ──────────────────────────────────────────────────────────────────
 const now    = new Date();
 const next8am = new Date();
@@ -474,4 +224,11 @@ setTimeout(() => {
 runHeartbeat();
 setInterval(runHeartbeat, 5 * 60 * 1000);
 
-console.log(`[peter-heartbeat] Started. Mission Control routing: active. STR Clinic listener: ${STR_CLINIC_BOT_TOKEN ? 'active' : 'DISABLED (set STR_CLINIC_BOT_TOKEN)'}. Audit triggers: free+paid.`);
+scheduleDailyFacebookSocialJob({
+  stateLoader: loadState,
+  saveState,
+  sendTelegram,
+  logger: console,
+});
+
+console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook pack scheduling active at 08:00 Europe/London by default.');

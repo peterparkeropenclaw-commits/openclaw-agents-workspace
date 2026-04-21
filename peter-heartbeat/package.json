@@ -2,6 +2,12 @@
   "name": "peter-heartbeat",
   "version": "1.0.0",
   "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:heartbeat": "node index.js",
+    "start:strclinic-listener": "node str-clinic-worker.js",
+    "test:social-pipeline": "node -e \"const { createFacebookPack } = require('./social-post-pipeline'); const pack = createFacebookPack(); console.log(JSON.stringify({ packDir: pack.packDir, posts: pack.posts.length, deckPath: pack.deckPath }, null, 2));\""
+  },
   "dependencies": {
     "@octokit/rest": "^20.0.2",
     "dotenv": "^16.0.3",
