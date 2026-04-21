@@ -106,7 +106,7 @@ async function notifyPeter(message) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
     }, res => { res.resume(); resolve(res.statusCode); });
-    req.on('error', e => { console.error('[peter-notify] error:', e.message); resolve(null); });
+    req.on('error', e => { console.error('[peter-notify] error:', e.message || e.code || String(e)); resolve(null); });
     req.write(payload);
     req.end();
   });
@@ -126,6 +126,27 @@ async function sendTelegram(message) {
     console.error('[telegram] error:', err.message);
   }
 }
+
+const MISSION_CONTROL_CHAT_ID = '-5085897499';
+
+async function sendMissionControl(message) {
+  const TELEGRAM_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
+  if (!TELEGRAM_TOKEN) return;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: MISSION_CONTROL_CHAT_ID, text: message }),
+    });
+    if (!res.ok) console.error('[mission-control] send failed:', res.status, await res.text());
+  } catch (err) {
+    console.error('[mission-control] error:', err.message || String(err));
+  }
+}
+
+// Track PRs received via webhook. Removed when review completes (success or failure after retry).
+// key: "owner/repo#prNumber"
+const pendingPRs = new Map();
 
 async function runReview(prData, attempt = 1) {
   const { owner, repo, prNumber, title, body } = prData;
@@ -194,6 +215,19 @@ If CHANGES REQUESTED list each issue with exact file name and line number where 
 
   log({ type: 'review', owner, repo, prNumber, title, approved, needsEscalation, diffLines });
 
+  // Notify Control Plane of verdict
+  const verdictPayload = {
+    verdict: approved ? 'approved' : 'changes_requested',
+    actor: 'reviewer-bot',
+    reviewer: 'openclawreviewer-a11y',
+    repo: `${owner}/${repo}`,
+    pr_number: prNumber,
+    pr_url: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
+    summary: reviewText.slice(0, 500),
+  };
+
+  await postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, `${owner}/${repo}`);
+
   if (!approved || needsEscalation) {
     const issues = reviewText.split('\n').filter(l => l.includes('FAIL') || l.startsWith('-')).join('\n');
     await notifyPeter(
@@ -212,6 +246,25 @@ function verifySignature(payload, signature) {
   try { return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)); } catch { return false; }
 }
 
+async function postVerdictWithRetry(ocTaskId, verdictPayload, prNumber, repo) {
+  const delays = [0, 5000, 30000, 120000];
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt] > 0) await new Promise(r => setTimeout(r, delays[attempt]));
+    try {
+      const cpRes = await fetch(`http://localhost:3210/tasks/OC-${ocTaskId}/verdict`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(verdictPayload),
+      });
+      if (cpRes.ok) return;
+      const errText = await cpRes.text();
+      console.error(`[control-plane] verdict attempt ${attempt + 1} failed for OC-${ocTaskId}:`, errText);
+    } catch (err) {
+      console.error(`[control-plane] verdict attempt ${attempt + 1} error for OC-${ocTaskId}:`, err.message);
+    }
+  }
+  await sendTelegram(`⚠️ CP verdict POST failed for task OC-${ocTaskId} PR #${prNumber}.\nManual state update needed.`);
+}
 
 async function runSmokeTest() {
   const checks = {
@@ -311,8 +364,27 @@ async function runReconciliation() {
         console.error('[reconciliation] review trigger failed for task', task.id, ':', err.message);
       }
     } else {
-        log({ type: 'reconciliation', action: 'already_reviewed', taskId: task.id });
-        console.log('Reconciliation: PR already reviewed for', task.id);
+      const verdict = botReview.state === 'APPROVED' ? 'approved' : 'changes_requested';
+      const verdictPayload = {
+        verdict,
+        actor: 'reconciliation',
+        reviewer: 'openclawreviewer-a11y',
+        repo: `${owner}/${repoName}`,
+        pr_number: prNumber,
+        pr_url: `https://github.com/${owner}/${repoName}/pull/${prNumber}`,
+        summary: '(recovered by reconciliation)',
+      };
+      try {
+        await fetch(`http://localhost:3210/tasks/${task.id}/verdict`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(verdictPayload),
+        });
+        log({ type: 'reconciliation', action: 'verdict_recovered', taskId: task.id });
+        console.log('Reconciliation: verdict recovered from GitHub for', task.id);
+      } catch (err) {
+        console.error('[reconciliation] verdict recovery failed for task', task.id, ':', err.message);
+      }
     }
   }
 }
@@ -367,15 +439,24 @@ const server = http.createServer(async (req, res) => {
     console.log(`[reviewer-bot] PR #${prNumber} ${action}: ${owner}/${repo} — "${title}"`);
     log({ type: 'received', owner, repo, prNumber, title, action });
 
+    const prKey = `${owner}/${repo}#${prNumber}`;
+    if (action === 'opened') {
+      pendingPRs.set(prKey, { owner, repo, prNumber, title, openedAt: Date.now() });
+    }
+
     try {
       await runReview({ owner, repo, prNumber, title, body: prBody });
+      pendingPRs.delete(prKey);
     } catch (err) {
       console.error('[reviewer-bot] review failed:', err.message);
       log({ type: 'error', owner, repo, prNumber, error: err.message });
 
       console.log('[reviewer-bot] retrying once...');
-      setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).catch(e => {
+      setTimeout(() => runReview({ owner, repo, prNumber, title, body: prBody }, 2).then(() => {
+        pendingPRs.delete(prKey);
+      }).catch(e => {
         console.error('[reviewer-bot] retry failed:', e.message);
+        pendingPRs.delete(prKey);
         notifyPeter(`⚠️ Reviewer bot FAILED on PR #${prNumber} (${owner}/${repo})\nError: ${e.message}\nManual review needed.\nhttps://github.com/${owner}/${repo}/pull/${prNumber}`);
       }), 5000);
     }
@@ -404,4 +485,19 @@ server.listen(PORT, async () => {
 
 setTimeout(() => {
   setInterval(() => runReconciliation().catch(e => console.error('[reconciliation] error:', e.message)), 10 * 60 * 1000);
+}, 2 * 60 * 1000);
+
+// 10-minute PR response watchdog: alert Mission Control if a PR has had no response after 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [prKey, { owner, repo, prNumber, title, openedAt }] of pendingPRs) {
+    if (now - openedAt >= 10 * 60 * 1000) {
+      pendingPRs.delete(prKey);
+      const ageMin = Math.round((now - openedAt) / 60000);
+      console.warn(`[watchdog] PR #${prNumber} on ${owner}/${repo} has had no review after ${ageMin}m — alerting Mission Control`);
+      sendMissionControl(
+        `⚠️ Reviewer Bot silent alert\nPR #${prNumber} on ${owner}/${repo} has had no review after ${ageMin} minutes.\n"${title}"\nhttps://github.com/${owner}/${repo}/pull/${prNumber}\nCheck reviewer-bot-github logs.`
+      );
+    }
+  }
 }, 2 * 60 * 1000);
