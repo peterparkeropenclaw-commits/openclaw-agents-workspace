@@ -361,11 +361,12 @@ function deckFor(posts, date) {
 }
 
 function splitHeadline(headline, emphasis) {
-  const text = String(headline || '').trim();
-  if (!emphasis) return escapeHtml(text);
-  const idx = text.toLowerCase().indexOf(String(emphasis).toLowerCase());
+  const text = String(headline || '').replace(/\s+/g, ' ').trim();
+  const word = String(emphasis || '').trim();
+  if (!word) return escapeHtml(text);
+  const idx = text.toLowerCase().lastIndexOf(word.toLowerCase());
   if (idx === -1) return escapeHtml(text);
-  return `${escapeHtml(text.slice(0, idx))}<span class="em accent">${escapeHtml(text.slice(idx, idx + emphasis.length))}</span>${escapeHtml(text.slice(idx + emphasis.length))}`;
+  return `${escapeHtml(text.slice(0, idx))}<em class="accent">${escapeHtml(text.slice(idx, idx + word.length))}</em>${escapeHtml(text.slice(idx + word.length))}`;
 }
 
 function fontDataUri(fontPath) {
@@ -374,61 +375,68 @@ function fontDataUri(fontPath) {
 
 function headlineFontSize(headline = '') {
   const len = String(headline || '').replace(/\s+/g, ' ').trim().length;
-  if (len > 60) return 78;
-  if (len > 45) return 88;
-  return 100;
+  if (len <= 35) return 96;
+  if (len <= 50) return 82;
+  if (len <= 65) return 68;
+  return 58;
 }
 
-function graphicHtml(post) {
-  const label = post.label || post.categoryLabel || post.topic || 'STR Clinic';
-  const showRule = String(post.headline || '').trim().length <= 72;
-  const bodyCopy = (String(post.bodyCopy || '').match(/^.*[.!?]/s)?.[0] ?? String(post.bodyCopy || '')).trim();
-  const headlineSize = headlineFontSize(post.headline);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
-  @font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter400)}) format('truetype')}
-  @font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter600)}) format('truetype')}
-  @font-face{font-family:'Inter';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter700)}) format('truetype')}
-  @font-face{font-family:'Playfair Display';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.playfair700)}) format('truetype')}
-  :root{--navy:#0A1628;--navy2:#132238;--cream:#F9F8F6;--amber:#C4832E;--line:rgba(255,255,255,.14);--muted:rgba(249,248,246,.62);--body:rgba(249,248,246,.82)}
-  *{box-sizing:border-box} html,body{margin:0;padding:0;width:1080px;height:1080px;overflow:hidden} body{background:#08111f;font-family:Inter,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
-  .card{width:1080px;height:1080px;position:relative;overflow:hidden;color:var(--cream);background:radial-gradient(circle at top right, rgba(196,131,46,.1), transparent 30%),radial-gradient(circle at bottom left, rgba(255,255,255,.04), transparent 34%),linear-gradient(180deg,var(--navy),var(--navy2) 100%)}
-  .card::before{content:"";position:absolute;inset:0;opacity:.10;mix-blend-mode:soft-light;pointer-events:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" stitchTiles="stitch"/></filter><rect width="200" height="200" filter="url(%23n)" opacity="0.12"/></svg>')}
-  .frame{position:absolute;inset:56px;border:1px solid var(--line)}
-  .brand{position:absolute;left:78px;top:72px;z-index:2;display:flex;flex-direction:column;gap:8px}.wordmark{display:flex;align-items:center;gap:18px}.str{font-family:'Playfair Display',Georgia,serif;font-size:52px;font-weight:700;line-height:1}.clinic{font-size:14px;letter-spacing:.4em;text-transform:uppercase;color:var(--amber);font-weight:600;line-height:1;transform:translateY(2px)}.sub{padding-left:2px;font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--muted);line-height:1.1}
-  .eyebrow{position:absolute;left:78px;top:180px;z-index:2;font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:700;color:var(--amber)}
-  .headline{position:absolute;left:78px;top:270px;z-index:2;max-width:760px;font-family:'Playfair Display',Georgia,serif;font-size:${headlineSize}px;font-weight:700;line-height:.95;letter-spacing:-.038em;overflow-wrap:anywhere}
-  .em{color:var(--amber);font-style:italic}
-  .accent{white-space:nowrap}
-  .rule{position:absolute;right:236px;top:248px;z-index:2;width:1px;height:574px;background:var(--line)}
-  .tags{position:absolute;right:92px;top:660px;z-index:2;width:138px;font:700 18px/1.8 Inter,Arial,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--amber)}
-  .body{position:absolute;left:78px;top:736px;z-index:2;width:732px;font:400 29px/1.42 Inter,Arial,sans-serif;color:var(--body);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
-  .footer{position:absolute;left:78px;bottom:82px;z-index:2;font:600 12px Inter,Arial,sans-serif;letter-spacing:.16em;text-transform:uppercase;color:rgba(249,248,246,.48)}
-  </style></head><body><div class="card">
-  <div class="frame"></div>
-  <div class="brand"><div class="wordmark"><div class="str">STR</div><div class="clinic">CLINIC</div></div><div class="sub">LISTING INTELLIGENCE</div></div>
-  <div class="eyebrow">${escapeHtml(String(label).toUpperCase())}</div>
-  <div class="headline">${splitHeadline(post.headline, post.emphasis)}</div>
-  ${showRule ? '<div class="rule"></div>' : ''}
-  <div class="tags">${showRule ? post.sideTags.map((t) => escapeHtml(String(t).toUpperCase())).join('<br>') : ''}</div>
-  <div class="body">${escapeHtml(bodyCopy)}</div>
-  <div class="footer">STR Clinic</div>
-  </div></body></html>`;
+function graphicHtml({ headline, emphasis, label, bodyCopy, sideTags }) {
+  const cleanHeadline = String(headline || '').replace(/\s+/g, ' ').trim();
+  const cleanLabel = String(label || '').trim();
+  const cleanBodyCopy = String(bodyCopy || '').replace(/\s+/g, ' ').trim();
+  const cleanSideTags = (Array.isArray(sideTags) ? sideTags : []).slice(0, 3).map((tag) => escapeHtml(String(tag || '').trim())).join('<br>');
+  const headlineSize = headlineFontSize(cleanHeadline);
+  return `<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><style>
+    @font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter400)}) format('truetype')}
+    @font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter600)}) format('truetype')}
+    @font-face{font-family:'Inter';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter700)}) format('truetype')}
+    @font-face{font-family:'Playfair Display';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.playfair700)}) format('truetype')}
+    :root { --navy:#0A1628; --navy2:#132238; --cream:#F5F0E8; --amber:#C9964A; --line-dark:rgba(255,255,255,.14); --muted:rgba(245,240,232,.5); --body:rgba(249,248,246,.82); }
+    * { box-sizing:border-box; }
+    html, body { margin:0; width:1080px; height:1080px; overflow:hidden; background:#0b1320; font-family:Inter, system-ui, sans-serif; }
+    .post { width:1080px; height:1080px; position:relative; overflow:hidden; color:var(--cream); background:radial-gradient(circle at top right, rgba(201,150,74,.10), transparent 30%), radial-gradient(circle at bottom left, rgba(255,255,255,.04), transparent 34%), linear-gradient(180deg, var(--navy), var(--navy2) 100%); }
+    .post:after { content:""; position:absolute; inset:0; opacity:.10; mix-blend-mode:soft-light; pointer-events:none; background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" stitchTiles="stitch"/></filter><rect width="200" height="200" filter="url(%23n)" opacity="0.12"/></svg>'); }
+    .frame { position:absolute; inset:56px; border:1px solid var(--line-dark); }
+    .card-inner { position:absolute; inset:56px; display:flex; flex-direction:column; padding:56px; height:calc(100% - 112px); overflow:hidden; }
+    .brand { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+    .wordmark { display:flex; flex-direction:row; align-items:baseline; gap:8px; }
+    .str { font-family:'Playfair Display', serif; font-weight:700; font-size:48px; color:#F5F0E8; line-height:1; }
+    .clinic { font-family:'Inter', sans-serif; font-weight:600; font-size:13px; color:#C9964A; letter-spacing:.4em; text-transform:uppercase; line-height:1; align-self:center; }
+    .subline { font-family:'Inter', sans-serif; font-weight:400; font-size:10px; color:rgba(245,240,232,.5); letter-spacing:.34em; text-transform:uppercase; }
+    .eyebrow { margin-top:44px; font-size:12px; letter-spacing:.22em; text-transform:uppercase; font-weight:700; color:var(--amber); }
+    .content-row { display:flex; flex-direction:row; flex:1; gap:24px; overflow:hidden; margin-top:54px; }
+    .headline-col { flex:1; overflow:hidden; min-width:0; max-width:75%; display:flex; flex-direction:column; }
+    .headline { font-family:'Playfair Display', serif; font-weight:700; letter-spacing:-.038em; line-height:.95; font-size:${headlineSize}px; overflow:hidden; word-break:break-word; overflow-wrap:anywhere; padding-right:12px; max-width:100%; }
+    .accent { color:var(--amber); font-style:italic; }
+    .body { margin-top:auto; width:100%; max-width:732px; font-size:29px; line-height:1.42; color:var(--body); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+    .side-col { width:90px; flex-shrink:0; display:flex; flex-direction:column; justify-content:flex-end; gap:12px; }
+    .rule { width:1px; flex:1; align-self:flex-end; background:var(--line-dark); min-height:260px; }
+    .aside { font-size:18px; line-height:1.8; letter-spacing:.18em; text-transform:uppercase; color:var(--amber); }
+    .meta { margin-top:24px; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:rgba(249,248,246,.48); }
+  </style></head><body><section class="post"><div class="frame"></div><div class="card-inner"><div class="brand"><div class="wordmark"><span class="str">STR</span><span class="clinic">CLINIC</span></div><div class="subline">LISTING INTELLIGENCE</div></div><div class="eyebrow">${escapeHtml(cleanLabel)}</div><div class="content-row"><div class="headline-col"><div class="headline">${splitHeadline(cleanHeadline, emphasis)}</div><div class="body">${escapeHtml(cleanBodyCopy)}</div></div><div class="side-col"><div class="rule"></div><div class="aside">${cleanSideTags}</div></div></div><div class="meta">STR Clinic</div></div></section></body></html>`;
 }
 
 async function renderGraphics(posts, outDir) {
   const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 3 });
   try {
     for (const post of posts) {
-      const page = await browser.newPage({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 4 });
+      const page = await context.newPage();
       await page.setContent(graphicHtml(post), { waitUntil: 'networkidle' });
-      await page.evaluate(() => document.fonts.ready);
-      await page.waitForTimeout(500);
-      await page.waitForFunction(() => document.fonts && document.fonts.status === 'loaded');
-      await page.waitForFunction(() => window.devicePixelRatio === 4);
-      await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`), type: 'png', clip: { x: 0, y: 0, width: 1080, height: 1080 } });
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+      });
+      await page.waitForTimeout(1000);
+      await page.screenshot({
+        path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`),
+        clip: { x: 0, y: 0, width: 1080, height: 1080 },
+        type: 'png'
+      });
       await page.close();
     }
   } finally {
+    await context.close();
     await browser.close();
   }
 }
