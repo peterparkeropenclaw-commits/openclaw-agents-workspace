@@ -10,6 +10,12 @@ const { chromium } = require('/Users/robotmac/workspace/str-clinic-pdf-generator
 
 const execFileAsync = promisify(execFile);
 const OUTPUT_ROOT = path.join(__dirname, 'output', 'facebook-daily-cron');
+const FONT_ASSETS = {
+  inter400: path.join(__dirname, 'assets', 'fonts', 'Inter-400.ttf'),
+  inter600: path.join(__dirname, 'assets', 'fonts', 'Inter-600.ttf'),
+  inter700: path.join(__dirname, 'assets', 'fonts', 'Inter-700.ttf'),
+  playfair700: path.join(__dirname, 'assets', 'fonts', 'PlayfairDisplay-700.ttf'),
+};
 const CATEGORY_LABELS = [
   'LISTING POSITIONING',
   'PRICING STRATEGY',
@@ -358,23 +364,41 @@ function splitHeadline(headline, emphasis) {
   return `${escapeHtml(text.slice(0, idx))}<span class="em">${escapeHtml(text.slice(idx, idx + emphasis.length))}</span>${escapeHtml(text.slice(idx + emphasis.length))}`;
 }
 
+function fontDataUri(fontPath) {
+  return `data:font/ttf;base64,${fs.readFileSync(fontPath).toString('base64')}`;
+}
+
+function headlineFontSize(headline = '') {
+  const len = String(headline || '').replace(/\s+/g, ' ').trim().length;
+  if (len > 70) return 66;
+  if (len > 60) return 74;
+  if (len > 50) return 82;
+  if (len > 40) return 90;
+  return 100;
+}
+
 function graphicHtml(post) {
   const label = post.label || post.categoryLabel || post.topic || 'STR Clinic';
   const showRule = String(post.headline || '').trim().length <= 72;
   const bodyCopy = String(post.bodyCopy || '').split(/(?<=[.!?])\s+/).slice(0, 2).join(' ').trim();
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet"><style>
+  const headlineSize = headlineFontSize(post.headline);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+  @font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter400)}) format('truetype')}
+  @font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter600)}) format('truetype')}
+  @font-face{font-family:'Inter';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter700)}) format('truetype')}
+  @font-face{font-family:'Playfair Display';font-style:normal;font-weight:700;font-display:block;src:url(${fontDataUri(FONT_ASSETS.playfair700)}) format('truetype')}
   :root{--navy:#0A1628;--navy2:#132238;--cream:#F9F8F6;--amber:#C4832E;--line:rgba(255,255,255,.14);--muted:rgba(249,248,246,.62);--body:rgba(249,248,246,.82)}
-  *{box-sizing:border-box} html,body{margin:0} body{background:#08111f;font-family:Inter,Arial,sans-serif}
+  *{box-sizing:border-box} html,body{margin:0;padding:0;width:1080px;height:1080px;overflow:hidden} body{background:#08111f;font-family:Inter,Arial,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
   .card{width:1080px;height:1080px;position:relative;overflow:hidden;color:var(--cream);background:radial-gradient(circle at top right, rgba(196,131,46,.1), transparent 30%),radial-gradient(circle at bottom left, rgba(255,255,255,.04), transparent 34%),linear-gradient(180deg,var(--navy),var(--navy2) 100%)}
   .card::before{content:"";position:absolute;inset:0;opacity:.10;mix-blend-mode:soft-light;pointer-events:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" stitchTiles="stitch"/></filter><rect width="200" height="200" filter="url(%23n)" opacity="0.12"/></svg>')}
   .frame{position:absolute;inset:56px;border:1px solid var(--line)}
   .brand{position:absolute;left:78px;top:72px;z-index:2}.wordmark{position:relative;display:inline-block;line-height:.92}.str{font-family:'Playfair Display',Georgia,serif;font-size:54px;font-weight:700}.clinic{position:absolute;left:84px;top:19px;font-size:15px;letter-spacing:.4em;text-transform:uppercase;color:var(--amber);font-weight:600}.sub{margin-top:7px;font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted)}
   .eyebrow{position:absolute;left:78px;top:180px;z-index:2;font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:700;color:var(--amber)}
-  .headline{position:absolute;left:78px;top:270px;z-index:2;max-width:760px;font-family:'Playfair Display',Georgia,serif;font-size:100px;font-weight:700;line-height:.95;letter-spacing:-.038em}
+  .headline{position:absolute;left:78px;top:270px;z-index:2;max-width:760px;font-family:'Playfair Display',Georgia,serif;font-size:${headlineSize}px;font-weight:700;line-height:.95;letter-spacing:-.038em;overflow-wrap:anywhere}
   .em{color:var(--amber);font-style:italic}
   .rule{position:absolute;right:236px;top:248px;z-index:2;width:1px;height:574px;background:var(--line)}
   .tags{position:absolute;right:92px;top:660px;z-index:2;width:138px;font:700 18px/1.8 Inter,Arial,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--amber)}
-  .body{position:absolute;left:78px;top:736px;z-index:2;width:732px;font:400 29px/1.42 Inter,Arial,sans-serif;color:var(--body)}
+  .body{position:absolute;left:78px;top:736px;z-index:2;width:732px;font:400 29px/1.42 Inter,Arial,sans-serif;color:var(--body);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
   .footer{position:absolute;left:78px;bottom:82px;z-index:2;font:600 12px Inter,Arial,sans-serif;letter-spacing:.16em;text-transform:uppercase;color:rgba(249,248,246,.48)}
   </style></head><body><div class="card">
   <div class="frame"></div>
@@ -393,10 +417,10 @@ async function renderGraphics(posts, outDir) {
   try {
     for (const post of posts) {
       const page = await browser.newPage({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 4 });
-      await page.setContent(graphicHtml(post), { waitUntil: 'networkidle' });
-      // Extra wait to ensure fonts are fully rendered
-      await page.waitForTimeout(800);
-      await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`), type: 'png' });
+      await page.setContent(graphicHtml(post), { waitUntil: 'load' });
+      await page.waitForFunction(() => document.fonts && document.fonts.status === 'loaded');
+      await page.waitForFunction(() => window.devicePixelRatio === 4);
+      await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`), type: 'png', clip: { x: 0, y: 0, width: 1080, height: 1080 } });
       await page.close();
     }
   } finally {
@@ -496,4 +520,4 @@ if (require.main === module) {
     .catch((error) => { console.error(error.stack || error.message); process.exit(1); });
 }
 
-module.exports = { run };
+module.exports = { run, graphicHtml, normalisePosts, localFallbackPosts, renderGraphics };
