@@ -393,8 +393,10 @@ async function renderGraphics(posts, outDir) {
   try {
     for (const post of posts) {
       const page = await browser.newPage({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 4 });
-      await page.setContent(graphicHtml(post));
-      await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`) });
+      await page.setContent(graphicHtml(post), { waitUntil: 'networkidle' });
+      // Extra wait to ensure fonts are fully rendered
+      await page.waitForTimeout(800);
+      await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`), type: 'png' });
       await page.close();
     }
   } finally {
@@ -426,6 +428,13 @@ async function uploadPack(packDir, date) {
   const rootId = process.env.SOCIAL_DRIVE_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID;
   if (!rootId) throw new Error('No drive folder id configured');
   const folder = await ensureDriveFolder(`STR Clinic Facebook — ${date}`, rootId);
+  // Delete any stale files in the folder before uploading fresh batch
+  try {
+    const existing = await gogJson(['drive', 'ls', '--parent', folder.id, '--max', '50']);
+    for (const f of (existing || [])) {
+      if (f.id) await gogJson(['drive', 'rm', f.id]).catch(() => {});
+    }
+  } catch (_) {}
   for (const name of fs.readdirSync(packDir).sort()) {
     const full = path.join(packDir, name);
     if (fs.statSync(full).isFile()) await uploadFile(full, folder.id, name);
