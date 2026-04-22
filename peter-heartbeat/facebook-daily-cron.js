@@ -304,7 +304,7 @@ function cleanSingleNounTag(tag) {
 
 function enforceHeadlineEndingEmphasis(headline, emphasis) {
   const cleanHeadline = String(headline || '').replace(/\s+/g, ' ').trim();
-  const cleanEmphasis = String(emphasis || '').replace(/\s+/g, ' ').trim();
+  const cleanEmphasis = String(emphasis || '').replace(/\s+/g, ' ').trim().split(' ')[0] || '';
   if (!cleanHeadline) return { headline: '', emphasis: cleanEmphasis };
   if (!cleanEmphasis) {
     const lastWord = cleanHeadline.split(' ').pop();
@@ -333,9 +333,13 @@ function normalisePosts(posts) {
       hashtags: Array.isArray(post.hashtags) ? post.hashtags.slice(0, 5) : [],
       categoryLabel: String(post.categoryLabel || CATEGORY_LABELS[index] || 'STRATEGY').toUpperCase().replace(/[^A-Z0-9 ]+/g, '').trim(),
       headline: enforced.headline,
-      emphasis: enforced.emphasis,
+      emphasis: String(enforced.emphasis || '').split(' ')[0] || '',
       sideTags,
-      bodyCopy: String(post.bodyCopy || '').split(/(?<=[.!?])\s+/).slice(0, 2).join(' ').trim(),
+      bodyCopy: ((String(post.bodyCopy || '').match(/^.*[.!?]/s)?.[0] ?? String(post.bodyCopy || ''))
+        .split(/(?<=[.!?])\s+/)
+        .slice(0, 2)
+        .join(' ')
+        .trim()),
     };
   });
 }
@@ -361,7 +365,7 @@ function splitHeadline(headline, emphasis) {
   if (!emphasis) return escapeHtml(text);
   const idx = text.toLowerCase().indexOf(String(emphasis).toLowerCase());
   if (idx === -1) return escapeHtml(text);
-  return `${escapeHtml(text.slice(0, idx))}<span class="em">${escapeHtml(text.slice(idx, idx + emphasis.length))}</span>${escapeHtml(text.slice(idx + emphasis.length))}`;
+  return `${escapeHtml(text.slice(0, idx))}<span class="em accent">${escapeHtml(text.slice(idx, idx + emphasis.length))}</span>${escapeHtml(text.slice(idx + emphasis.length))}`;
 }
 
 function fontDataUri(fontPath) {
@@ -370,17 +374,15 @@ function fontDataUri(fontPath) {
 
 function headlineFontSize(headline = '') {
   const len = String(headline || '').replace(/\s+/g, ' ').trim().length;
-  if (len > 70) return 66;
-  if (len > 60) return 74;
-  if (len > 50) return 82;
-  if (len > 40) return 90;
+  if (len > 60) return 78;
+  if (len > 45) return 88;
   return 100;
 }
 
 function graphicHtml(post) {
   const label = post.label || post.categoryLabel || post.topic || 'STR Clinic';
   const showRule = String(post.headline || '').trim().length <= 72;
-  const bodyCopy = String(post.bodyCopy || '').split(/(?<=[.!?])\s+/).slice(0, 2).join(' ').trim();
+  const bodyCopy = (String(post.bodyCopy || '').match(/^.*[.!?]/s)?.[0] ?? String(post.bodyCopy || '')).trim();
   const headlineSize = headlineFontSize(post.headline);
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
   @font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:block;src:url(${fontDataUri(FONT_ASSETS.inter400)}) format('truetype')}
@@ -396,6 +398,7 @@ function graphicHtml(post) {
   .eyebrow{position:absolute;left:78px;top:180px;z-index:2;font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:700;color:var(--amber)}
   .headline{position:absolute;left:78px;top:270px;z-index:2;max-width:760px;font-family:'Playfair Display',Georgia,serif;font-size:${headlineSize}px;font-weight:700;line-height:.95;letter-spacing:-.038em;overflow-wrap:anywhere}
   .em{color:var(--amber);font-style:italic}
+  .accent{white-space:nowrap}
   .rule{position:absolute;right:236px;top:248px;z-index:2;width:1px;height:574px;background:var(--line)}
   .tags{position:absolute;right:92px;top:660px;z-index:2;width:138px;font:700 18px/1.8 Inter,Arial,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:var(--amber)}
   .body{position:absolute;left:78px;top:736px;z-index:2;width:732px;font:400 29px/1.42 Inter,Arial,sans-serif;color:var(--body);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
@@ -456,9 +459,11 @@ async function uploadPack(packDir, date) {
   const folder = await ensureDriveFolder(`STR Clinic Facebook — ${date}`, rootId);
   // Delete any stale files in the folder before uploading fresh batch
   try {
-    const existing = await gogJson(['drive', 'ls', '--parent', folder.id, '--max', '50']);
-    for (const f of (existing || [])) {
-      if (f.id) await gogJson(['drive', 'rm', f.id]).catch(() => {});
+    const existingFiles = await gogJson(['drive', 'ls', '--parent', folder.id, '--max', '100']);
+    for (const f of (Array.isArray(existingFiles) ? existingFiles : [])) {
+      if (f.id && f.mimeType !== 'application/vnd.google-apps.folder') {
+        await gogJson(['drive', 'rm', f.id]).catch(() => {});
+      }
     }
   } catch (_) {}
   for (const name of fs.readdirSync(packDir).sort()) {
