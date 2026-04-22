@@ -392,7 +392,7 @@ function graphicHtml(post) {
   .card{width:1080px;height:1080px;position:relative;overflow:hidden;color:var(--cream);background:radial-gradient(circle at top right, rgba(196,131,46,.1), transparent 30%),radial-gradient(circle at bottom left, rgba(255,255,255,.04), transparent 34%),linear-gradient(180deg,var(--navy),var(--navy2) 100%)}
   .card::before{content:"";position:absolute;inset:0;opacity:.10;mix-blend-mode:soft-light;pointer-events:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="2" stitchTiles="stitch"/></filter><rect width="200" height="200" filter="url(%23n)" opacity="0.12"/></svg>')}
   .frame{position:absolute;inset:56px;border:1px solid var(--line)}
-  .brand{position:absolute;left:78px;top:72px;z-index:2}.wordmark{position:relative;display:inline-block;line-height:.92}.str{font-family:'Playfair Display',Georgia,serif;font-size:54px;font-weight:700}.clinic{position:absolute;left:84px;top:19px;font-size:15px;letter-spacing:.4em;text-transform:uppercase;color:var(--amber);font-weight:600}.sub{margin-top:7px;font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--muted)}
+  .brand{position:absolute;left:78px;top:72px;z-index:2;display:flex;flex-direction:column;gap:8px}.wordmark{display:flex;align-items:center;gap:18px}.str{font-family:'Playfair Display',Georgia,serif;font-size:52px;font-weight:700;line-height:1}.clinic{font-size:14px;letter-spacing:.4em;text-transform:uppercase;color:var(--amber);font-weight:600;line-height:1;transform:translateY(2px)}.sub{padding-left:2px;font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--muted);line-height:1.1}
   .eyebrow{position:absolute;left:78px;top:180px;z-index:2;font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:700;color:var(--amber)}
   .headline{position:absolute;left:78px;top:270px;z-index:2;max-width:760px;font-family:'Playfair Display',Georgia,serif;font-size:${headlineSize}px;font-weight:700;line-height:.95;letter-spacing:-.038em;overflow-wrap:anywhere}
   .em{color:var(--amber);font-style:italic}
@@ -402,7 +402,7 @@ function graphicHtml(post) {
   .footer{position:absolute;left:78px;bottom:82px;z-index:2;font:600 12px Inter,Arial,sans-serif;letter-spacing:.16em;text-transform:uppercase;color:rgba(249,248,246,.48)}
   </style></head><body><div class="card">
   <div class="frame"></div>
-  <div class="brand"><div class="wordmark"><div class="str">STR</div><div class="clinic">Clinic</div></div><div class="sub">Listing Intelligence</div></div>
+  <div class="brand"><div class="wordmark"><div class="str">STR</div><div class="clinic">CLINIC</div></div><div class="sub">LISTING INTELLIGENCE</div></div>
   <div class="eyebrow">${escapeHtml(String(label).toUpperCase())}</div>
   <div class="headline">${splitHeadline(post.headline, post.emphasis)}</div>
   ${showRule ? '<div class="rule"></div>' : ''}
@@ -417,7 +417,9 @@ async function renderGraphics(posts, outDir) {
   try {
     for (const post of posts) {
       const page = await browser.newPage({ viewport: { width: 1080, height: 1080 }, deviceScaleFactor: 4 });
-      await page.setContent(graphicHtml(post), { waitUntil: 'load' });
+      await page.setContent(graphicHtml(post), { waitUntil: 'networkidle' });
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForTimeout(500);
       await page.waitForFunction(() => document.fonts && document.fonts.status === 'loaded');
       await page.waitForFunction(() => window.devicePixelRatio === 4);
       await page.screenshot({ path: path.join(outDir, `post-${String(post.index).padStart(2, '0')}.png`), type: 'png', clip: { x: 0, y: 0, width: 1080, height: 1080 } });
