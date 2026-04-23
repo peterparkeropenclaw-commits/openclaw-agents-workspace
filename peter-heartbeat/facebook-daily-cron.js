@@ -87,7 +87,48 @@ function validateDraftContent(text) {
   return true;
 }
 
-function createDraftRecord({ text, image_path = null, status = 'draft', scheduled_publish_time = null }) {
+function draftPreview(text, maxLen = 300) {
+  const t = String(text || '').trim();
+  if (t.length <= maxLen) return t;
+  return t.slice(0, maxLen).replace(/\s+\S*$/, '') + '…';
+}
+
+const BASE_HASHTAGS = [
+  '#AirbnbHost', '#ShortTermRental', '#STRHost', '#AirbnbUK', '#HolidayLet',
+  '#VacationRental', '#AirbnbTips', '#STRClinic',
+];
+
+const TOPIC_HASHTAG_MAP = [
+  [/pric/i,       ['#AirbnbPricing', '#RentalIncome']],
+  [/photo/i,      ['#AirbnbPhotos', '#ListingPhotography']],
+  [/review/i,     ['#GuestReviews', '#AirbnbReviews']],
+  [/seasonal|season/i, ['#SeasonalRental', '#PeakSeason']],
+  [/compet/i,     ['#STRMarket', '#RentalStrategy']],
+  [/guest/i,      ['#GuestExperience', '#AirbnbGuest']],
+  [/conver/i,     ['#BookingConversion', '#ListingOptimisation']],
+  [/friction/i,   ['#ListingOptimisation', '#BookingRate']],
+  [/occupan/i,    ['#OccupancyRate', '#AirbnbRevenue']],
+  [/decision|diagnos/i, ['#HostMindset', '#SmartHosting']],
+  [/title|headline/i,  ['#ListingTitle', '#AirbnbSearch']],
+  [/margin|revenue/i,  ['#RentalIncome', '#STRRevenue']],
+];
+
+function buildTopicHashtags(topic) {
+  const t = String(topic || '');
+  for (const [pattern, tags] of TOPIC_HASHTAG_MAP) {
+    if (pattern.test(t)) return tags;
+  }
+  return ['#ListingOptimisation', '#HostStrategy'];
+}
+
+function buildFullHashtags(post) {
+  const postHashtags = Array.isArray(post.hashtags) ? post.hashtags : [];
+  const topicSpecific = buildTopicHashtags(post.topic);
+  const combined = [...new Set([...BASE_HASHTAGS, ...topicSpecific, ...postHashtags])];
+  return combined.join(' ');
+}
+
+function createDraftRecord({ text, image_path = null, status = 'draft', scheduled_publish_time = null, label = null, post_index = null, total_posts = null }) {
   if (!VALID_STATUSES.has(status)) throw new Error(`Invalid draft status: ${status}`);
   const timestamp = Date.now();
   return {
@@ -96,6 +137,9 @@ function createDraftRecord({ text, image_path = null, status = 'draft', schedule
     image_path: image_path || null,
     status,
     scheduled_publish_time: scheduled_publish_time || null,
+    label: label || null,
+    post_index: post_index || null,
+    total_posts: total_posts || null,
     created_at: timestamp,
     approved_at: null,
     published_at: null,
@@ -139,8 +183,17 @@ function nextCadenceSlot(baseTimeMs = Date.now(), cadenceHours = Number(process.
 }
 
 function draftTextFromPost(post) {
-  const parts = [post.hook, ...(post.paragraphs || []), post.close, (post.hashtags || []).join(' ')];
+  const parts = [post.hook, ...(post.paragraphs || []), post.close, buildFullHashtags(post)];
   return parts.filter(Boolean).join('\n\n').trim();
+}
+
+function deriveLabelFromPost(post) {
+  // Use categoryLabel if set and doesn't look like a generic category name, else topic
+  if (post.categoryLabel && !/^(LISTING|PRICING|PHOTO|GUEST|REVIEW|SEASONAL|MARKET|COMPETITOR|CONVERSION|HOST)\s+/i.test(post.categoryLabel)) {
+    return post.categoryLabel;
+  }
+  // Convert topic to Title Case label
+  return String(post.topic || 'Post').split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ').slice(0, 60);
 }
 
 async function tryCdrGeneration(researchBrief = null) {
@@ -748,6 +801,9 @@ async function createDraftBatch({ count = 10, includeImages = false } = {}) {
       image_path: includeImages ? imagePath : null,
       status: 'pending_approval',
       scheduled_publish_time: Math.floor(slot.getTime() / 1000),
+      label: deriveLabelFromPost(post),
+      post_index: post.index,
+      total_posts: posts.length,
     });
     saveDraft(draft);
     logFb(`Draft validation passed: ${draft.id}`);
@@ -789,24 +845,56 @@ async function sendTelegramPhoto(photoPath, caption, buttons, { token, chatId } 
   return data;
 }
 
+function buildApprovalCaption(draft) {
+  const labelPart = draft.label ? ` — ${draft.label}` : '';
+  const indexPart = (draft.post_index && draft.total_posts)
+    ? `📌 Post ${draft.post_index}/${draft.total_posts}${labelPart}`
+    : `📌 Post${labelPart}`;
+  const scheduled = `🗓 Scheduled: ${formatTelegramSchedule(draft.scheduled_publish_time)}`;
+  // Telegram captions max 1024 chars — trim copy if needed, keep hashtags
+  const textParts = String(draft.text || '').split(/\n\n/);
+  const hashtags = textParts.length > 1 ? textParts.pop() : '';
+  const body = textParts.join('\n\n');
+  const header = `${indexPart}\n\n`;
+  const footer = `\n\n${hashtags}\n\n${scheduled}`;
+  const maxBody = 1024 - header.length - footer.length;
+  const trimmedBody = body.length > maxBody ? body.slice(0, maxBody - 1) + '…' : body;
+  return `${header}${trimmedBody}${footer}`;
+}
+
 async function sendDraftApprovalRequest(draft) {
-  const message = `📋 Facebook draft awaiting approval
-
-${draftPreview(draft.text)}
-
-Scheduled: ${formatTelegramSchedule(draft.scheduled_publish_time)}`;
+  const caption = buildApprovalCaption(draft);
   const buttons = [[
-    { text: '✅ Schedule (assigned time)', callback_data: `facebook:${draft.id}:schedule` },
+    { text: '✅ Schedule', callback_data: `facebook:${draft.id}:schedule` },
     { text: '🕐 Reschedule', callback_data: `facebook:${draft.id}:reschedule` },
     { text: '❌ Reject', callback_data: `facebook:${draft.id}:reject` },
   ]];
   if (draft.image_path) {
     if (fs.existsSync(draft.image_path)) {
-      return sendTelegramPhoto(draft.image_path, message, buttons);
+      return sendTelegramPhoto(draft.image_path, caption, buttons);
     }
     logFb(`Approval image missing, falling back to text-only: ${draft.id} path=${draft.image_path}`);
+    return sendTelegramWithButtons(`${caption}\n\n[Creative not available]`, buttons);
   }
-  return sendTelegramWithButtons(message, buttons);
+  return sendTelegramWithButtons(caption, buttons);
+}
+
+async function sendDraftApprovals(drafts) {
+  if (!Array.isArray(drafts) || drafts.length === 0) {
+    logFb('sendDraftApprovals: no drafts to send');
+    return;
+  }
+  logFb(`sendDraftApprovals: sending ${drafts.length} posts one-by-one`);
+  for (const draft of drafts) {
+    try {
+      await sendDraftApprovalRequest(draft);
+      logFb(`Approval sent: ${draft.id} (${draft.label || draft.post_index || 'unlabelled'})`);
+    } catch (err) {
+      logFb(`Approval send failed: ${draft.id} error=${err.message}`);
+    }
+    // Small delay to avoid Telegram rate limits
+    await new Promise((r) => setTimeout(r, 500));
+  }
 }
 
 function rejectDraft(draftId) {
@@ -882,15 +970,15 @@ async function run({ manual = false, generateBatch = true } = {}) {
 
   const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), includeImages: true }) : [];
   const driveUrl = await uploadPack(packDir, isoDate);
-  const summaryLines = posts.map((post, index) => {
-    const firstLine = post.hook || post.paragraphs?.[0] || '';
-    return `${index + 1}. ${post.topic} — ${firstLine}`;
-  });
-  const telegramMessage = `📱 Facebook posts ready — ${isoDate}\n\nDrive folder: ${driveUrl}\n\nDrafts awaiting approval: ${drafts.length}\n\nPosts:\n${summaryLines.join('\n')}\n\nCopy/paste ready from Drive.`;
+  // Send summary notification first
+  const telegramMessage = `📱 Facebook posts ready — ${isoDate}\n\nDrive folder: ${driveUrl}\n\n${drafts.length} posts below — approve each individually.`;
   const telegram = await sendTelegram(telegramMessage, {
     token: process.env.MISSION_CONTROL_BOT_TOKEN,
     chatId: process.env.MISSION_CONTROL_CHAT_ID || '-5085897499',
   });
+
+  // Send per-post approval messages
+  await sendDraftApprovals(drafts);
 
   return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts, drafts, telegramMessage };
 }
@@ -967,5 +1055,7 @@ module.exports = {
   testSchedule,
   deleteFacebookPost,
   sendDraftApprovalRequest,
+  sendDraftApprovals,
   formatTelegramSchedule,
+  buildApprovalCaption,
 };
