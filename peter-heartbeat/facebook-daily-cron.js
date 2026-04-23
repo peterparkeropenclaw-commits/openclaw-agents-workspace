@@ -782,23 +782,32 @@ async function approveDraft(draftId, { action, scheduled_time }) {
   }
 }
 
-async function createDraftBatch({ count = 10, includeImages = false } = {}) {
-  let posts = await tryCdrGeneration();
-  if (!Array.isArray(posts) || posts.length < count) {
-    try { posts = await openAiGeneration(); } catch (_) { posts = null; }
+async function createDraftBatch({ count = 10, posts: providedPosts = null, packDir: providedPackDir = null } = {}) {
+  // Use pre-generated posts/packDir to ensure image paths align with rendered PNGs
+  let posts;
+  if (Array.isArray(providedPosts) && providedPosts.length >= count) {
+    posts = providedPosts.slice(0, count);
+  } else {
+    posts = await tryCdrGeneration();
+    if (!Array.isArray(posts) || posts.length < count) {
+      try { posts = await openAiGeneration(); } catch (_) { posts = null; }
+    }
+    if (!Array.isArray(posts) || posts.length < count) posts = localFallbackPosts();
+    posts = normalisePosts(posts).slice(0, count);
   }
-  if (!Array.isArray(posts) || posts.length < count) posts = localFallbackPosts();
-  posts = normalisePosts(posts).slice(0, count);
+  const resolvedPackDir = providedPackDir || path.join(OUTPUT_ROOT, londonDateParts().isoDate);
 
   const scheduled = [];
   let slot = nextCadenceSlot();
   for (const post of posts) {
     const draftText = draftTextFromPost(post);
     validateDraftContent(draftText);
-    const imagePath = includeImages ? path.join(OUTPUT_ROOT, londonDateParts().isoDate, `post-${String(post.index).padStart(2, '0')}.png`) : null;
+    const pngPath = path.join(resolvedPackDir, `post-${String(post.index).padStart(2, '0')}.png`);
+    const imagePath = require('fs').existsSync(pngPath) ? pngPath : null;
+    if (!imagePath) console.log(`[facebook-daily-cron] Creative missing for post ${post.index}: ${pngPath}`);
     const draft = createDraftRecord({
       text: draftText,
-      image_path: includeImages ? imagePath : null,
+      image_path: imagePath,
       status: 'pending_approval',
       scheduled_publish_time: Math.floor(slot.getTime() / 1000),
       label: deriveLabelFromPost(post),
@@ -968,7 +977,7 @@ async function run({ manual = false, generateBatch = true } = {}) {
   fs.writeFileSync(path.join(packDir, 'manifest.json'), JSON.stringify({ date: isoDate, source, count: posts.length, posts }, null, 2));
   await renderGraphics(posts, packDir);
 
-  const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), includeImages: true }) : [];
+  const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), posts, packDir }) : [];
   const driveUrl = await uploadPack(packDir, isoDate);
   // Send summary notification first
   const telegramMessage = `📱 Facebook posts ready — ${isoDate}\n\nDrive folder: ${driveUrl}\n\n${drafts.length} posts below — approve each individually.`;
