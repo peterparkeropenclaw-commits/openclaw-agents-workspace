@@ -745,6 +745,64 @@ async function createDraftBatch({ count = 10, includeImages = false } = {}) {
   return scheduled;
 }
 
+
+async function sendTelegramWithButtons(message, buttons, { token, chatId } = {}) {
+  const resolvedToken = token || process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
+  const resolvedChatId = chatId || process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
+  const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: resolvedChatId, text: message, reply_markup: { inline_keyboard: buttons } })
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram failed: ${data.description}`);
+  return data;
+}
+
+async function sendTelegramPhoto(photoPath, caption, buttons, { token, chatId } = {}) {
+  const resolvedToken = token || process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
+  const resolvedChatId = chatId || process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
+  const form = new FormData();
+  form.append('chat_id', resolvedChatId);
+  form.append('caption', caption);
+  form.append('photo', new Blob([await fs.promises.readFile(photoPath)]), path.basename(photoPath));
+  form.append('reply_markup', JSON.stringify({ inline_keyboard: buttons }));
+  const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendPhoto`, {
+    method: 'POST',
+    body: form,
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram photo failed: ${data.description}`);
+  return data;
+}
+
+async function sendDraftApprovalRequest(draft) {
+  const message = `📋 Facebook draft awaiting approval
+
+${draftPreview(draft.text)}
+
+Scheduled: ${formatTelegramSchedule(draft.scheduled_publish_time)}`;
+  const buttons = [[
+    { text: '✅ Schedule (assigned time)', callback_data: `facebook:${draft.id}:schedule` },
+    { text: '🕐 Reschedule', callback_data: `facebook:${draft.id}:reschedule` },
+    { text: '❌ Reject', callback_data: `facebook:${draft.id}:reject` },
+  ]];
+  if (draft.image_path) {
+    if (fs.existsSync(draft.image_path)) {
+      return sendTelegramPhoto(draft.image_path, message, buttons);
+    }
+    logFb(`Approval image missing, falling back to text-only: ${draft.id} path=${draft.image_path}`);
+  }
+  return sendTelegramWithButtons(message, buttons);
+}
+
+function rejectDraft(draftId) {
+  const draft = loadDraft(draftId);
+  draft.status = 'rejected';
+  draft.publish_error = null;
+  saveDraft(draft);
+  return draft;
+}
+
 async function healthcheck() {
   const token = await getPageAccessToken();
   return { ok: true, pageId: process.env.FACEBOOK_PAGE_ID, pageToken: redactToken(token) };
@@ -874,9 +932,12 @@ module.exports = {
   listDrafts,
   loadDraft,
   approveDraft,
+  rejectDraft,
   getPageAccessToken,
   healthcheck,
   testPublish,
   testSchedule,
   deleteFacebookPost,
+  sendDraftApprovalRequest,
+  formatTelegramSchedule,
 };

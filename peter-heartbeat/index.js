@@ -14,6 +14,8 @@ const {
   testSchedule: facebookTestSchedule,
   listDrafts: listFacebookDrafts,
   approveDraft: approveFacebookDraft,
+  rejectDraft: rejectFacebookDraft,
+  formatTelegramSchedule,
 } = require('./facebook-daily-cron');
 
 const MISSION_CONTROL_BOT_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN;
@@ -32,6 +34,10 @@ const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'workspace', 'me
 const COOLDOWNS_FILE = path.join(process.env.HOME, '.openclaw', 'heartbeat-cooldowns.json');
 const FACEBOOK_API_HOST = '127.0.0.1';
 const FACEBOOK_API_PORT = Number(process.env.FACEBOOK_LOCAL_API_PORT || 3216);
+const FACEBOOK_CALLBACK_ALLOWED_UPDATES = JSON.stringify(['callback_query', 'message']);
+const RESCHEDULE_PROMPTS = new Map();
+let telegramPollingOffset = 0;
+let telegramPollingStarted = false;
 
 function loadState()  {
   try {
@@ -215,6 +221,211 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
+async function answerTelegramCallback(callbackQueryId, text) {
+  if (!MISSION_CONTROL_BOT_TOKEN) return false;
+  const res = await fetch(`https://api.telegram.org/bot${MISSION_CONTROL_BOT_TOKEN}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+  });
+  const data = await res.json();
+  return data.ok;
+}
+
+function firstLine(text) {
+  return String(text || '').split(/\r?\n/).find(Boolean) || String(text || '').slice(0, 80);
+}
+
+function formatRescheduleConfirmation(unixTime) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(unixTime * 1000));
+}
+
+function startOfTodayLondon(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(now);
+  const get = (type) => Number(parts.find((part) => part.type === type)?.value);
+  return new Date(get('year'), get('month') - 1, get('day'));
+}
+
+function parseSimpleRescheduleTime(input, now = new Date()) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
+  const today = startOfTodayLondon(now);
+
+  const parseTime = (value) => {
+    const match = value.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || 0);
+    const suffix = (match[3] || '').toLowerCase();
+    if (suffix === 'pm' && hour < 12) hour += 12;
+    if (suffix === 'am' && hour === 12) hour = 0;
+    if (!suffix && hour > 23) return null;
+    if (minute > 59 || hour > 23) return null;
+    return { hour, minute };
+  };
+
+  const buildTimestamp = (date, time) => {
+    if (!time) return null;
+    const candidate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), time.hour, time.minute, 0, 0);
+    return Math.floor(candidate.getTime() / 1000);
+  };
+
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ t](\d{1,2}):(\d{2}))?$/i);
+  if (isoMatch) {
+    const [, year, month, day, hour = '9', minute = '0'] = isoMatch;
+    return Math.floor(new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), 0, 0).getTime() / 1000);
+  }
+
+  const monthMap = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+  const dateMatch = normalized.match(/^(\d{1,2})\s+([a-z]{3,9})\s+(?:at\s+)?(.+)$/i);
+  if (dateMatch) {
+    const day = Number(dateMatch[1]);
+    const month = monthMap[dateMatch[2].slice(0, 3)];
+    const time = parseTime(dateMatch[3]);
+    if (month !== undefined && time) {
+      let candidate = new Date(now.getFullYear(), month, day, time.hour, time.minute, 0, 0);
+      if (candidate.getTime() <= now.getTime()) candidate = new Date(now.getFullYear() + 1, month, day, time.hour, time.minute, 0, 0);
+      return Math.floor(candidate.getTime() / 1000);
+    }
+  }
+
+  const tomorrowMatch = normalized.match(/^tomorrow(?:\s+at)?\s+(.+)$/i);
+  if (tomorrowMatch) {
+    const time = parseTime(tomorrowMatch[1]);
+    if (time) return buildTimestamp(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1), time);
+  }
+
+  const dayMap = { sun:0, sunday:0, mon:1, monday:1, tue:2, tues:2, tuesday:2, wed:3, wednesday:3, thu:4, thur:4, thurs:4, thursday:4, fri:5, friday:5, sat:6, saturday:6 };
+  const weekdayMatch = normalized.match(/^(sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)(?:\s+at)?\s+(.+)$/i);
+  if (weekdayMatch) {
+    const target = dayMap[weekdayMatch[1].toLowerCase()];
+    const time = parseTime(weekdayMatch[2]);
+    if (target !== undefined && time) {
+      const current = today.getDay();
+      const delta = (target - current + 7) % 7;
+      let candidateDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + delta);
+      let candidateTs = buildTimestamp(candidateDate, time);
+      if (candidateTs && candidateTs <= Math.floor(now.getTime() / 1000)) {
+        candidateDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + delta + 7);
+        candidateTs = buildTimestamp(candidateDate, time);
+      }
+      return candidateTs;
+    }
+  }
+
+  return null;
+}
+
+async function processFacebookCallback(callback) {
+  if (!callback?.data) return { ok: true, ignored: true };
+  const [scope, draftId, action] = String(callback.data).split(':');
+  if (scope !== 'facebook' || !draftId || !action) return { ok: false, error: 'invalid_callback' };
+
+  console.log(`[FB callback] received: draftId=${draftId} action=${action}`);
+
+  if (action === 'schedule') {
+    const draft = await approveFacebookDraft(draftId, {
+      action: 'schedule',
+      scheduled_time: listFacebookDrafts().find((item) => item.id === draftId)?.scheduled_publish_time,
+    });
+    RESCHEDULE_PROMPTS.delete(String(callback.message?.chat?.id || ''));
+    await answerTelegramCallback(callback.id, 'Draft scheduled');
+    await sendTelegram(`✅ Scheduled: ${escapeHtml(firstLine(draft.text))} - going live ${escapeHtml(formatTelegramSchedule(draft.scheduled_publish_time))}`);
+    return { ok: true, action, draftId };
+  }
+
+  if (action === 'reject') {
+    const draft = rejectFacebookDraft(draftId);
+    RESCHEDULE_PROMPTS.delete(String(callback.message?.chat?.id || ''));
+    await answerTelegramCallback(callback.id, 'Draft rejected');
+    await sendTelegram(`❌ Rejected: ${escapeHtml(firstLine(draft.text))}`);
+    return { ok: true, action, draftId };
+  }
+
+  if (action === 'reschedule') {
+    const chatId = String(callback.message?.chat?.id || MISSION_CONTROL_CHAT_ID);
+    RESCHEDULE_PROMPTS.set(chatId, { draftId, requestedAt: Date.now() });
+    await answerTelegramCallback(callback.id, 'Send a new time');
+    await sendTelegram("Reply with your preferred time (e.g. 'tomorrow 9am' or 'Fri 3pm')", { chatId });
+    return { ok: true, action, draftId, awaiting_time: true };
+  }
+
+  return { ok: false, error: 'unsupported_action' };
+}
+
+async function processRescheduleReply(message) {
+  const chatId = String(message?.chat?.id || '');
+  const pending = RESCHEDULE_PROMPTS.get(chatId);
+  const text = String(message?.text || '').trim();
+  if (!pending || !text) return false;
+
+  const scheduledTime = parseSimpleRescheduleTime(text);
+  if (!scheduledTime) {
+    await sendTelegram("Couldn't parse that time - try something like 'Fri 3pm' or 'tomorrow 9am'", { chatId });
+    return true;
+  }
+
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const maxUnix = nowUnix + 30 * 24 * 60 * 60;
+  if (scheduledTime <= nowUnix || scheduledTime > maxUnix) {
+    await sendTelegram("Couldn't parse that time - try something like 'Fri 3pm' or 'tomorrow 9am'", { chatId });
+    return true;
+  }
+
+  const draft = await approveFacebookDraft(pending.draftId, { action: 'schedule', scheduled_time: scheduledTime });
+  RESCHEDULE_PROMPTS.delete(chatId);
+  await sendTelegram(`✅ Rescheduled to ${escapeHtml(formatRescheduleConfirmation(draft.scheduled_publish_time))}`, { chatId });
+  return true;
+}
+
+async function handleTelegramUpdate(update) {
+  if (update.callback_query) return processFacebookCallback(update.callback_query);
+  if (update.message?.text) {
+    const handled = await processRescheduleReply(update.message);
+    return { ok: true, handled };
+  }
+  return { ok: true, ignored: true };
+}
+
+async function startTelegramCallbackPolling() {
+  if (telegramPollingStarted || !MISSION_CONTROL_BOT_TOKEN) return;
+  telegramPollingStarted = true;
+
+  while (true) {
+    try {
+      const url = `https://api.telegram.org/bot${MISSION_CONTROL_BOT_TOKEN}/getUpdates?offset=${telegramPollingOffset}&timeout=30&allowed_updates=${encodeURIComponent(FACEBOOK_CALLBACK_ALLOWED_UPDATES)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.description || `HTTP ${res.status}`);
+
+      for (const update of data.result || []) {
+        telegramPollingOffset = Math.max(telegramPollingOffset, Number(update.update_id) + 1);
+        try {
+          await handleTelegramUpdate(update);
+        } catch (error) {
+          console.error('[FB callback] update handling failed:', error.message);
+        }
+      }
+    } catch (error) {
+      console.error('[FB callback] getUpdates failed:', error.message);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+}
+
 function isAuthorized(req) {
   const expected = process.env.TRIGGER_AUTH_TOKEN;
   if (!expected) return true;
@@ -271,6 +482,7 @@ runHeartbeat();
 setInterval(runHeartbeat, 5 * 60 * 1000);
 
 scheduleDailyFacebookCronJob({ logger: console });
+startTelegramCallbackPolling().catch((error) => console.error('[FB callback] polling crashed:', error.message));
 
 http.createServer((req, res) => {
   handleFacebookApi(req, res).catch((error) => {
