@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { runMorningResearch } = require('./lib/morning-researcher');
 const crypto = require('crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 const { execFile } = require('child_process');
@@ -142,10 +143,11 @@ function draftTextFromPost(post) {
   return parts.filter(Boolean).join('\n\n').trim();
 }
 
-async function tryCdrGeneration() {
+async function tryCdrGeneration(researchBrief = null) {
   const url = process.env.CDR_WEBHOOK_URL || 'http://localhost:3104/task';
   const taskId = `FB-POSTS-${Date.now()}`;
   const resultPath = `/tmp/${taskId}.json`;
+  const researchContext = buildResearchContext(researchBrief);
   const brief = `Generate exactly 10 unique Facebook posts for STR Clinic.
 Audience: UK Airbnb and short-term rental hosts, 1-3 properties, age 30-55.
 Niche: Airbnb listing optimisation in the UK.
@@ -153,7 +155,7 @@ Tone: Educational, authority-building, Facebook-native but LinkedIn-substance. D
 Pillars: listing optimisation, pricing strategy, guest experience, photography tips, seasonal tactics, competitor positioning, review strategy, STR market insights, conversion friction, host decision-making.
 Format: Return strict JSON only with key posts, where posts is an array of 10 objects. Each object must include: topic, hook, paragraphs (array of 3 to 5 short paragraphs), close, hashtags (array of 3 to 5), categoryLabel, headline, emphasis, sideTags (array of 2 to 3), bodyCopy.
 Dedupe: vary topics across the 10 posts, no repeated pillar.
-Write result to: ${resultPath}`;
+${researchContext ? `\nResearch context for today:\n${researchContext}\n` : ''}Write result to: ${resultPath}`;
 
   try {
     const res = await fetch(url, {
@@ -344,7 +346,19 @@ function localFallbackPosts() {
   ];
 }
 
-async function openAiGeneration() {
+function buildResearchContext(researchBrief) {
+  if (!researchBrief || (!researchBrief.trendingTopics?.length && !researchBrief.hostPainPoints?.length)) return null;
+  const lines = [];
+  if (researchBrief.seasonalContext) lines.push(`Seasonal context: ${researchBrief.seasonalContext}`);
+  if (researchBrief.trendingTopics?.length) lines.push(`Trending host topics today:\n${researchBrief.trendingTopics.slice(0, 6).map((t, i) => `  ${i + 1}. ${t}`).join('\n')}`);
+  if (researchBrief.hostPainPoints?.length) lines.push(`Real host pain points from Reddit/forums:\n${researchBrief.hostPainPoints.slice(0, 3).map((p, i) => `  ${i + 1}. ${p}`).join('\n')}`);
+  if (researchBrief.suggestedPostAngles?.length) lines.push(`Suggested angles:\n${researchBrief.suggestedPostAngles.slice(0, 4).map((a, i) => `  ${i + 1}. ${a}`).join('\n')}`);
+  lines.push('Instruction: Prioritise posts that directly address what hosts are talking about today. Reference specific concerns or questions hosts are raising where relevant. Keep the STR Clinic voice: direct, credible, UK-first, educational.');
+  return lines.join('\n\n');
+}
+
+async function openAiGeneration(researchBrief = null) {
+  const researchContext = buildResearchContext(researchBrief);
   const prompt = `Generate exactly 10 unique Facebook posts for STR Clinic as strict JSON.
 Return ONLY JSON with shape {"posts":[...] }.
 Each post object must include:
@@ -367,7 +381,7 @@ Constraints:
 - Editorial statement, not ad copy.
 - UK English.
 - No repeated topics.
-- Make the 10 topics genuinely distinct and useful.`;
+- Make the 10 topics genuinely distinct and useful.${researchContext ? `\n\nResearch context for today — use this to inform topic selection and content:\n${researchContext}` : ''}`;  
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -836,11 +850,19 @@ async function run({ manual = false, generateBatch = true } = {}) {
   const packDir = path.join(OUTPUT_ROOT, isoDate);
   ensureDir(packDir);
 
-  let posts = await tryCdrGeneration();
+  // Run morning researcher first — fail gracefully
+  let researchBrief = null;
+  try {
+    researchBrief = await runMorningResearch();
+  } catch (err) {
+    console.error('[FB] Morning research failed (non-blocking):', err?.message || err);
+  }
+
+  let posts = await tryCdrGeneration(researchBrief);
   let source = 'cdr';
   if (!Array.isArray(posts) || posts.length < 10) {
     try {
-      posts = await openAiGeneration();
+      posts = await openAiGeneration(researchBrief);
       source = 'openai-fallback';
     } catch (_) {
       posts = null;
@@ -911,6 +933,12 @@ function scheduleDailyFacebookCronJob({ logger = console } = {}) {
   };
 
   scheduleNextRun();
+}
+
+// ---- formatTelegramSchedule (referenced in module.exports) ----
+function formatTelegramSchedule(unixTime) {
+  if (!unixTime) return 'unscheduled';
+  return new Date(unixTime * 1000).toLocaleString('en-GB', { timeZone: 'Europe/London' });
 }
 
 if (require.main === module) {

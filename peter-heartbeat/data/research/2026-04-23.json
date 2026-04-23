@@ -1,0 +1,40 @@
+{
+  "date": "2026-04-23",
+  "trendingTopics": [
+    "Cleaner keeps bringing her dog… and it pees inside",
+    "Airbnb charging 15.5% on cleaning fees expense",
+    "Did the math on what Airbnb fees are actually costing me, now looking at direct booking",
+    "VRBO Listing Totals Misleading",
+    "Host refusing to honor reservation but won’t cancel? [US]",
+    "No king size bed even though the listing said so",
+    "Soap dispensers or individual sized soaps?",
+    "Can a host charge a cleaning fee after booking? [US]"
+  ],
+  "hostPainPoints": [
+    "Host is asking me to cancel",
+    "Host submitted a damage claim for damage we did NOT do!",
+    "Host offers to cancel booking and arrange the stay privately; is this a scam? [US]",
+    "Accused of property damage by host - they want to charge me 1.2k euro [Italy]",
+    "No one wants my money"
+  ],
+  "viralAngles": [
+    "Host is asking me to cancel (361 upvotes, r/vrbo)",
+    "Host submitted a damage claim for damage we did NOT do! (88 upvotes, r/vrbo)",
+    "Cleaner keeps bringing her dog… and it pees inside (67 upvotes, r/airbnb_hosts)"
+  ],
+  "seasonalContext": "Early April — spring demand building, Easter holiday bookings, key period for listing refresh before summer peak.",
+  "suggestedPostAngles": [
+    "Address host concern: \"Host is asking me to cancel\"",
+    "Address host concern: \"Host submitted a damage claim for damage we did NOT do!\"",
+    "Address host concern: \"Host offers to cancel booking and arrange the stay privately; is this a scam? [U\"",
+    "React to trending thread: Host is asking me to cancel",
+    "React to trending thread: Host submitted a damage claim for damage we did NOT do!",
+    "Why most UK Airbnb hosts are leaving money on the table with their title"
+  ],
+  "_meta": {
+    "redditPostsScraped": 45,
+    "airbnbTopicsFound": 0,
+    "bpTopicsFound": 0,
+    "totalTopics": 13
+  }
+}
