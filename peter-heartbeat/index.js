@@ -5,14 +5,20 @@ require('dotenv').config({ path: path.join(__dirname, '.env'), override: true })
 
 const { Octokit } = require('@octokit/rest');
 const fs   = require('fs');
-const { scheduleDailyFacebookSocialJob } = require('./social-post-pipeline');
+const http = require('http');
+const { URL } = require('url');
+const {
+  scheduleDailyFacebookCronJob,
+  healthcheck: facebookHealthcheck,
+  testPublish: facebookTestPublish,
+  testSchedule: facebookTestSchedule,
+  listDrafts: listFacebookDrafts,
+  approveDraft: approveFacebookDraft,
+} = require('./facebook-daily-cron');
 
-// ─── Telegram config ─────────────────────────────────────────────────────────
-// Mission Control (group chat) — all agent output goes here
 const MISSION_CONTROL_BOT_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN;
 const MISSION_CONTROL_CHAT_ID   = process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
 
-// ─── Project config ──────────────────────────────────────────────────────────
 const LIVE_URLS = {
   'review-responder': 'https://review-responder-hazel.vercel.app',
   'airbnb-optimiser': 'https://airbnb-optimiser.vercel.app',
@@ -24,8 +30,9 @@ const REPOS = ['review-responder', 'airbnb-optimiser', 'optilyst-app'];
 
 const STATE_FILE     = path.join(process.env.HOME, '.openclaw', 'workspace', 'memory', 'heartbeat-state.json');
 const COOLDOWNS_FILE = path.join(process.env.HOME, '.openclaw', 'heartbeat-cooldowns.json');
+const FACEBOOK_API_HOST = '127.0.0.1';
+const FACEBOOK_API_PORT = Number(process.env.FACEBOOK_LOCAL_API_PORT || 3216);
 
-// ─── State helpers ─────────────────────────────────────────────────────────────
 function loadState()  {
   try {
     if (!fs.existsSync(STATE_FILE)) {
@@ -49,7 +56,6 @@ function saveState(s) {
 function loadCooldowns()  { try { return JSON.parse(fs.readFileSync(COOLDOWNS_FILE, 'utf8')); } catch { return {}; } }
 function saveCooldowns(c) { try { fs.writeFileSync(COOLDOWNS_FILE, JSON.stringify(c, null, 2)); } catch (e) { console.error('[state] saveCooldowns error:', e.message); } }
 
-// ─── Telegram HTML helpers ────────────────────────────────────────────────────
 function escapeHtml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
@@ -61,7 +67,6 @@ function stripHtml(text) {
   return String(text || '').replace(/<[^>]+>/g, '');
 }
 
-// ─── Telegram send → Mission Control ──────────────────────────────────────────
 async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId = MISSION_CONTROL_CHAT_ID } = {}) {
   if (!token) { console.error('[telegram] MISSION_CONTROL_BOT_TOKEN not set'); return false; }
   try {
@@ -72,7 +77,6 @@ async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId
     });
     const data = await res.json();
     if (data.ok) return true;
-    // HTML parse failed — retry as plain text so the message always gets through
     console.warn('[telegram] HTML send failed, retrying as plain text:', data.description);
     const plain = stripHtml(message);
     const res2 = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -86,7 +90,6 @@ async function sendTelegram(message, { token = MISSION_CONTROL_BOT_TOKEN, chatId
   } catch (err) { console.error('[telegram] error:', err.message); return false; }
 }
 
-// ─── Control Plane notify (deploy hooks) ──────────────────────────────────────
 async function notifyControlPlaneDeployed(taskId, liveUrl) {
   try {
     const res = await fetch(`http://localhost:3210/tasks/${taskId}/deployed`, {
@@ -98,7 +101,6 @@ async function notifyControlPlaneDeployed(taskId, liveUrl) {
   } catch (err) { console.error('[control-plane] deployed POST error:', err.message); }
 }
 
-// ─── Morning briefing → Mission Control ───────────────────────────────────────
 async function sendMorningBriefing() {
   console.log('[heartbeat] Morning briefing triggered at', new Date().toISOString());
   const state   = loadState();
@@ -146,7 +148,6 @@ async function sendMorningBriefing() {
   }
 }
 
-// ─── Stale task watchdog → Mission Control ─────────────────────────────────────
 async function runHeartbeat() {
   const state = loadState();
   console.log(`[heartbeat] Running at ${new Date().toISOString()}`);
@@ -193,22 +194,67 @@ async function runHeartbeat() {
 
     if (cooldownsDirty) saveCooldowns(cooldowns);
 
-    // record last successful run time
     state.lastChecks = state.lastChecks || {};
     state.lastChecks.heartbeat = Date.now();
   } catch (err) {
     console.error('[heartbeat] error:', err.message);
   } finally {
-    // Persist state on every tick so we survive restarts
     saveState(state);
   }
 }
 
-// ─── Startup checks ────────────────────────────────────────────────────────────
-if (!MISSION_CONTROL_BOT_TOKEN) {
-  console.error('[peter-heartbeat] FATAL: MISSION_CONTROL_BOT_TOKEN not set — briefings and alerts will fail.');
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload, null, 2));
 }
-// ─── Schedule ──────────────────────────────────────────────────────────────────
+
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  if (!chunks.length) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function isAuthorized(req) {
+  const expected = process.env.TRIGGER_AUTH_TOKEN;
+  if (!expected) return true;
+  const auth = req.headers.authorization || '';
+  return auth === `Bearer ${expected}`;
+}
+
+async function handleFacebookApi(req, res) {
+  if (!isAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+  const url = new URL(req.url, `http://${FACEBOOK_API_HOST}:${FACEBOOK_API_PORT}`);
+
+  try {
+    if (req.method === 'GET' && url.pathname === '/facebook/health') {
+      return sendJson(res, 200, await facebookHealthcheck());
+    }
+    if (req.method === 'POST' && url.pathname === '/facebook/test-publish') {
+      return sendJson(res, 200, await facebookTestPublish());
+    }
+    if (req.method === 'POST' && url.pathname === '/facebook/test-schedule') {
+      return sendJson(res, 200, await facebookTestSchedule());
+    }
+    if (req.method === 'GET' && url.pathname === '/facebook/drafts') {
+      return sendJson(res, 200, { drafts: listFacebookDrafts() });
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/facebook/approve/')) {
+      const draftId = decodeURIComponent(url.pathname.split('/').pop());
+      const body = await readJsonBody(req);
+      const draft = await approveFacebookDraft(draftId, body || {});
+      return sendJson(res, 200, draft);
+    }
+    return sendJson(res, 404, { error: 'not_found' });
+  } catch (error) {
+    return sendJson(res, 500, { error: error.message });
+  }
+}
+
+if (!MISSION_CONTROL_BOT_TOKEN) {
+  console.error('[peter-heartbeat] FATAL: MISSION_CONTROL_BOT_TOKEN not set, briefings and alerts will fail.');
+}
+
 const now    = new Date();
 const next8am = new Date();
 next8am.setHours(8, 0, 0, 0);
@@ -224,11 +270,15 @@ setTimeout(() => {
 runHeartbeat();
 setInterval(runHeartbeat, 5 * 60 * 1000);
 
-scheduleDailyFacebookSocialJob({
-  stateLoader: loadState,
-  saveState,
-  sendTelegram,
-  logger: console,
+scheduleDailyFacebookCronJob({ logger: console });
+
+http.createServer((req, res) => {
+  handleFacebookApi(req, res).catch((error) => {
+    console.error('[facebook-api] uncaught error:', error.message);
+    sendJson(res, 500, { error: 'internal_error' });
+  });
+}).listen(FACEBOOK_API_PORT, FACEBOOK_API_HOST, () => {
+  console.log(`[facebook-api] Listening on http://${FACEBOOK_API_HOST}:${FACEBOOK_API_PORT}`);
 });
 
-console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook social pipeline scheduling active.');
+console.log('[peter-heartbeat] Started. Mission Control routing: active. STR Clinic polling moved to strclinic-listener. Facebook daily cron scheduling active.');

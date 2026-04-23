@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -10,6 +11,7 @@ const { chromium } = require('/Users/robotmac/workspace/str-clinic-pdf-generator
 
 const execFileAsync = promisify(execFile);
 const OUTPUT_ROOT = path.join(__dirname, 'output', 'facebook-daily-cron');
+const DATA_ROOT = path.join(__dirname, 'data', 'facebook-drafts');
 const FONT_ASSETS = {
   inter400: path.join(__dirname, 'assets', 'fonts', 'Inter-400.ttf'),
   inter600: path.join(__dirname, 'assets', 'fonts', 'Inter-600.ttf'),
@@ -29,6 +31,20 @@ const CATEGORY_LABELS = [
   'HOST DECISION-MAKING',
 ];
 const DEFAULT_TAGS = ['MARGIN', 'POSITIONING', 'RATE'];
+const DEFAULT_SCHEDULE = '09:00';
+const BLOCKED_PATTERNS = [
+  /^heading:/im,
+  /^body:/im,
+  /^caption:/im,
+  /^cta:/im,
+  /^hook:/im,
+  /^draft:/im,
+  /\[insert/i,
+  /\btodo\b/i,
+  /\bplaceholder\b/i,
+  /lorem ipsum/i,
+];
+const VALID_STATUSES = new Set(['draft', 'pending_approval', 'approved', 'scheduled', 'published', 'failed', 'rejected']);
 
 function londonDateParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
@@ -44,6 +60,87 @@ function londonDateParts(now = new Date()) {
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function slug(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
 function escapeHtml(s) { return String(s || '').replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m])); }
+function redactToken(token) {
+  const value = String(token || '');
+  if (!value) return 'missing';
+  return `${value.slice(0, 8)}...`;
+}
+function logFb(message) {
+  console.log(`[FB] ${message}`);
+}
+
+function getDraftFilePath(id) {
+  ensureDir(DATA_ROOT);
+  return path.join(DATA_ROOT, `${id}.json`);
+}
+
+function nowUnix() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function validateDraftContent(text) {
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (pattern.test(text)) throw new Error(`Draft failed validation: matched blocked pattern ${pattern}`);
+  }
+  if (!text || text.trim().length < 20) throw new Error('Draft content too short or empty');
+  return true;
+}
+
+function createDraftRecord({ text, image_path = null, status = 'draft', scheduled_publish_time = null }) {
+  if (!VALID_STATUSES.has(status)) throw new Error(`Invalid draft status: ${status}`);
+  const timestamp = Date.now();
+  return {
+    id: crypto.randomUUID(),
+    text: String(text || '').trim(),
+    image_path: image_path || null,
+    status,
+    scheduled_publish_time: scheduled_publish_time || null,
+    created_at: timestamp,
+    approved_at: null,
+    published_at: null,
+    facebook_post_id: null,
+    publish_error: null,
+  };
+}
+
+function saveDraft(draft) {
+  fs.writeFileSync(getDraftFilePath(draft.id), JSON.stringify(draft, null, 2));
+  return draft;
+}
+
+function loadDraft(id) {
+  return JSON.parse(fs.readFileSync(getDraftFilePath(id), 'utf8'));
+}
+
+function listDrafts() {
+  ensureDir(DATA_ROOT);
+  return fs.readdirSync(DATA_ROOT)
+    .filter((name) => name.endsWith('.json'))
+    .sort()
+    .map((name) => JSON.parse(fs.readFileSync(path.join(DATA_ROOT, name), 'utf8')))
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+function requireFutureScheduledTime(unixTime) {
+  const min = nowUnix() + 10 * 60;
+  const max = nowUnix() + 30 * 24 * 60 * 60;
+  if (!Number.isInteger(unixTime)) throw new Error('scheduled_publish_time must be a unix timestamp');
+  if (unixTime < min) throw new Error('scheduled_publish_time must be at least 10 minutes in the future');
+  if (unixTime > max) throw new Error('scheduled_publish_time must be no more than 30 days in the future');
+}
+
+function nextCadenceSlot(baseTimeMs = Date.now(), cadenceHours = Number(process.env.FACEBOOK_POST_CADENCE_HOURS || 8)) {
+  const intervalMs = Math.max(1, cadenceHours) * 60 * 60 * 1000;
+  const next = new Date(baseTimeMs + intervalMs);
+  next.setMinutes(0, 0, 0);
+  if (next.getTime() <= baseTimeMs) next.setTime(baseTimeMs + intervalMs);
+  return next;
+}
+
+function draftTextFromPost(post) {
+  const parts = [post.hook, ...(post.paragraphs || []), post.close, (post.hashtags || []).join(' ')];
+  return parts.filter(Boolean).join('\n\n').trim();
+}
 
 async function tryCdrGeneration() {
   const url = process.env.CDR_WEBHOOK_URL || 'http://localhost:3104/task';
@@ -423,7 +520,7 @@ async function renderGraphics(posts, outDir) {
   try {
     for (const post of posts) {
       const page = await context.newPage();
-      await page.setContent(graphicHtml(post), { waitUntil: 'networkidle' });
+      await page.setContent(graphicHtml({ ...post, label: post.categoryLabel }), { waitUntil: 'networkidle' });
       await page.evaluate(async () => {
         await document.fonts.ready;
       });
@@ -465,7 +562,6 @@ async function uploadPack(packDir, date) {
   const rootId = process.env.SOCIAL_DRIVE_FOLDER_ID || process.env.REPORTS_DRIVE_FOLDER_ID || process.env.DRIVE_FOLDER_ID;
   if (!rootId) throw new Error('No drive folder id configured');
   const folder = await ensureDriveFolder(`STR Clinic Facebook — ${date}`, rootId);
-  // Delete any stale files in the folder before uploading fresh batch
   try {
     const existingFiles = await gogJson(['drive', 'ls', '--parent', folder.id, '--max', '100']);
     for (const f of (Array.isArray(existingFiles) ? existingFiles : [])) {
@@ -482,19 +578,197 @@ async function uploadPack(packDir, date) {
   return `https://drive.google.com/drive/folders/${folder.id}`;
 }
 
-async function sendTelegram(message) {
-  const token = process.env.TELEGRAM_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
-  const chatId = process.env.BRANDON_CHAT_ID || '5821364140';
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+async function sendTelegram(message, { token, chatId } = {}) {
+  const resolvedToken = token || process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
+  const resolvedChatId = chatId || process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
+  const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: message })
+    body: JSON.stringify({ chat_id: resolvedChatId, text: message })
   });
   const data = await res.json();
   if (!data.ok) throw new Error(`Telegram failed: ${data.description}`);
   return data;
 }
 
-async function run({ manual = false } = {}) {
+async function getPageAccessToken(userToken = process.env.FACEBOOK_USER_ACCESS_TOKEN, pageId = process.env.FACEBOOK_PAGE_ID) {
+  if (!userToken) throw new Error('FACEBOOK_USER_ACCESS_TOKEN is not configured');
+  if (!pageId) throw new Error('FACEBOOK_PAGE_ID is not configured');
+  const url = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,access_token,tasks&access_token=${encodeURIComponent(userToken)}`;
+  const res = await fetch(url);
+  const body = await res.json();
+  if (!res.ok || body.error) throw new Error(body.error?.message || `Failed to derive page token (${res.status})`);
+  const page = Array.isArray(body.data) ? body.data.find((p) => String(p.id) === String(pageId)) : null;
+  if (!page) throw new Error(`Page ${pageId} not found in accounts`);
+  logFb(`Page token fetched for page ${pageId} (token: ${redactToken(page.access_token)})`);
+  return page.access_token;
+}
+
+async function graphFormPost(url, fields) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null) form.append(key, value);
+  }
+  const res = await fetch(url, { method: 'POST', body: form });
+  const body = await res.json();
+  if (!res.ok || body.error) throw new Error(body.error?.message || `Facebook Graph request failed (${res.status})`);
+  return body;
+}
+
+async function publishDraftNow(draft, pageToken) {
+  logFb(`Publish started: ${draft.id}`);
+  if (draft.image_path) {
+    if (!fs.existsSync(draft.image_path)) throw new Error(`Image missing at ${draft.image_path}`);
+    const imageBlob = await fs.openAsBlob(draft.image_path);
+    return graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/photos`, {
+      caption: draft.text,
+      source: imageBlob,
+      access_token: pageToken,
+    });
+  }
+  return graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/feed`, {
+    message: draft.text,
+    access_token: pageToken,
+  });
+}
+
+async function scheduleDraftOnFacebook(draft, pageToken, scheduledTime) {
+  logFb(`Publish started: ${draft.id}`);
+  if (draft.image_path) {
+    if (!fs.existsSync(draft.image_path)) throw new Error(`Image missing at ${draft.image_path}`);
+    return graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/photos`, {
+      caption: draft.text,
+      published: 'false',
+      scheduled_publish_time: String(scheduledTime),
+      source: await fs.openAsBlob(draft.image_path),
+      access_token: pageToken,
+    });
+  }
+  return graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/feed`, {
+    message: draft.text,
+    published: 'false',
+    scheduled_publish_time: String(scheduledTime),
+    access_token: pageToken,
+  });
+}
+
+async function deleteFacebookPost(postId, pageToken) {
+  const res = await fetch(`https://graph.facebook.com/v25.0/${postId}?access_token=${encodeURIComponent(pageToken)}`, { method: 'DELETE' });
+  const body = await res.json();
+  if (!res.ok || body.error || body.success !== true) throw new Error(body.error?.message || `Delete failed (${res.status})`);
+  return body;
+}
+
+async function createDraft({ text, image_path = null, scheduled_publish_time = null, status = 'draft' }) {
+  validateDraftContent(text);
+  const draft = createDraftRecord({ text, image_path, status, scheduled_publish_time });
+  if (draft.status === 'pending_approval') logFb(`Draft validation passed: ${draft.id}`);
+  saveDraft(draft);
+  if (draft.scheduled_publish_time) logFb(`Draft created: ${draft.id} scheduled for ${new Date(draft.scheduled_publish_time * 1000).toISOString()}`);
+  else logFb(`Draft created: ${draft.id} scheduled for unscheduled`);
+  return draft;
+}
+
+async function approveDraft(draftId, { action, scheduled_time }) {
+  const draft = loadDraft(draftId);
+  if (!['pending_approval', 'approved'].includes(draft.status)) throw new Error(`Draft ${draftId} is not awaiting approval`);
+  validateDraftContent(draft.text);
+  logFb(`Draft validation passed: ${draft.id}`);
+  if (!['publish', 'schedule'].includes(action)) throw new Error('action must be publish or schedule');
+  logFb(`Approval received: ${draft.id} action=${action}`);
+  draft.status = 'approved';
+  draft.approved_at = Date.now();
+  saveDraft(draft);
+
+  const pageToken = await getPageAccessToken();
+  try {
+    if (action === 'publish') {
+      const result = await publishDraftNow(draft, pageToken);
+      draft.status = 'published';
+      draft.facebook_post_id = result.post_id || result.id || null;
+      draft.published_at = Date.now();
+      draft.publish_error = null;
+      saveDraft(draft);
+      logFb(`Publish succeeded: ${draft.id} fb_post_id=${draft.facebook_post_id}`);
+      return draft;
+    }
+
+    requireFutureScheduledTime(scheduled_time);
+    const result = await scheduleDraftOnFacebook(draft, pageToken, scheduled_time);
+    draft.status = 'scheduled';
+    draft.scheduled_publish_time = scheduled_time;
+    draft.facebook_post_id = result.post_id || result.id || null;
+    draft.publish_error = null;
+    saveDraft(draft);
+    logFb(`Schedule succeeded: ${draft.id} scheduled_for=${new Date(scheduled_time * 1000).toISOString()}`);
+    return draft;
+  } catch (error) {
+    draft.status = 'failed';
+    draft.publish_error = error.message;
+    saveDraft(draft);
+    logFb(`Publish failed: ${draft.id} error=${error.message}`);
+    throw error;
+  }
+}
+
+async function createDraftBatch({ count = 10, includeImages = false } = {}) {
+  let posts = await tryCdrGeneration();
+  if (!Array.isArray(posts) || posts.length < count) {
+    try { posts = await openAiGeneration(); } catch (_) { posts = null; }
+  }
+  if (!Array.isArray(posts) || posts.length < count) posts = localFallbackPosts();
+  posts = normalisePosts(posts).slice(0, count);
+
+  const scheduled = [];
+  let slot = nextCadenceSlot();
+  for (const post of posts) {
+    const draftText = draftTextFromPost(post);
+    validateDraftContent(draftText);
+    const imagePath = includeImages ? path.join(OUTPUT_ROOT, londonDateParts().isoDate, `post-${String(post.index).padStart(2, '0')}.png`) : null;
+    const draft = createDraftRecord({
+      text: draftText,
+      image_path: includeImages ? imagePath : null,
+      status: 'pending_approval',
+      scheduled_publish_time: Math.floor(slot.getTime() / 1000),
+    });
+    saveDraft(draft);
+    logFb(`Draft validation passed: ${draft.id}`);
+    logFb(`Draft created: ${draft.id} scheduled for ${slot.toISOString()}`);
+    scheduled.push(draft);
+    slot = new Date(slot.getTime() + Math.max(1, Number(process.env.FACEBOOK_POST_CADENCE_HOURS || 8)) * 60 * 60 * 1000);
+  }
+  if (scheduled.length) logFb(`Generated ${scheduled.length} drafts, scheduled from ${new Date(scheduled[0].scheduled_publish_time * 1000).toISOString()} to ${new Date(scheduled[scheduled.length - 1].scheduled_publish_time * 1000).toISOString()}`);
+  return scheduled;
+}
+
+async function healthcheck() {
+  const token = await getPageAccessToken();
+  return { ok: true, pageId: process.env.FACEBOOK_PAGE_ID, pageToken: redactToken(token) };
+}
+
+async function testPublish() {
+  const pageToken = await getPageAccessToken();
+  const body = await graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/feed`, {
+    message: `STR Clinic test publish ${new Date().toISOString()}\n\nThis is a safe internal validation post.`,
+    access_token: pageToken,
+  });
+  await deleteFacebookPost(body.id, pageToken);
+  return { ok: true, postId: body.id, deleted: true };
+}
+
+async function testSchedule() {
+  const pageToken = await getPageAccessToken();
+  const scheduled = nowUnix() + 15 * 60;
+  const body = await graphFormPost(`https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/feed`, {
+    message: `STR Clinic scheduled test ${new Date().toISOString()}\n\nThis is a safe internal scheduled validation post.`,
+    published: 'false',
+    scheduled_publish_time: String(scheduled),
+    access_token: pageToken,
+  });
+  await deleteFacebookPost(body.id, pageToken);
+  return { ok: true, postId: body.id, scheduled_publish_time: scheduled, deleted: true };
+}
+
+async function run({ manual = false, generateBatch = true } = {}) {
   const { isoDate } = londonDateParts(new Date());
   const packDir = path.join(OUTPUT_ROOT, isoDate);
   ensureDir(packDir);
@@ -521,12 +795,59 @@ async function run({ manual = false } = {}) {
   fs.writeFileSync(path.join(packDir, 'manifest.json'), JSON.stringify({ date: isoDate, source, count: posts.length, posts }, null, 2));
   await renderGraphics(posts, packDir);
 
+  const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), includeImages: true }) : [];
   const driveUrl = await uploadPack(packDir, isoDate);
-  const topicLines = posts.map((post) => `• ${post.topic}`);
-  const telegramMessage = `📅 Facebook content ready — ${isoDate}\n\n10 posts + creatives uploaded to Drive:\n${driveUrl}\n\nTopics covered:\n${topicLines.join('\n')}\n\nReady to review and schedule.`;
-  const telegram = await sendTelegram(telegramMessage);
+  const summaryLines = posts.map((post, index) => {
+    const firstLine = post.hook || post.paragraphs?.[0] || '';
+    return `${index + 1}. ${post.topic} — ${firstLine}`;
+  });
+  const telegramMessage = `📱 Facebook posts ready — ${isoDate}\n\nDrive folder: ${driveUrl}\n\nDrafts awaiting approval: ${drafts.length}\n\nPosts:\n${summaryLines.join('\n')}\n\nCopy/paste ready from Drive.`;
+  const telegram = await sendTelegram(telegramMessage, {
+    token: process.env.MISSION_CONTROL_BOT_TOKEN,
+    chatId: process.env.MISSION_CONTROL_CHAT_ID || '-5085897499',
+  });
 
-  return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts };
+  return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts, drafts, telegramMessage };
+}
+
+function scheduleDailyFacebookCronJob({ logger = console } = {}) {
+  const enabled = ['1', 'true', 'yes', 'on'].includes(String(process.env.FACEBOOK_SOCIAL_CRON_ENABLED || '').trim().toLowerCase());
+  if (!enabled) {
+    logger.log('[facebook-daily-cron] FACEBOOK_SOCIAL_CRON_ENABLED is false, cron disabled');
+    return;
+  }
+
+  const schedule = process.env.FACEBOOK_SOCIAL_CRON_TIME || DEFAULT_SCHEDULE;
+  const [hoursRaw, minutesRaw] = schedule.split(':');
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) {
+    logger.error(`[facebook-daily-cron] Invalid FACEBOOK_SOCIAL_CRON_TIME: ${schedule}`);
+    return;
+  }
+
+  const scheduleNextRun = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(hours, minutes, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    const delay = next.getTime() - now.getTime();
+    logger.log(`[facebook-daily-cron] Scheduled in ${Math.round(delay / 60000)} minutes (at ${next.toISOString()})`);
+
+    setTimeout(async () => {
+      try {
+        const result = await run();
+        logger.log(`[facebook-daily-cron] Run complete for ${result.date}: ${result.driveUrl}`);
+      } catch (error) {
+        logger.error('[facebook-daily-cron] Run failed:', error.stack || error.message);
+      } finally {
+        scheduleNextRun();
+      }
+    }, delay);
+  };
+
+  scheduleNextRun();
 }
 
 if (require.main === module) {
@@ -535,4 +856,22 @@ if (require.main === module) {
     .catch((error) => { console.error(error.stack || error.message); process.exit(1); });
 }
 
-module.exports = { run, graphicHtml, normalisePosts, localFallbackPosts, renderGraphics };
+module.exports = {
+  run,
+  scheduleDailyFacebookCronJob,
+  graphicHtml,
+  normalisePosts,
+  localFallbackPosts,
+  renderGraphics,
+  validateDraftContent,
+  createDraft,
+  createDraftBatch,
+  listDrafts,
+  loadDraft,
+  approveDraft,
+  getPageAccessToken,
+  healthcheck,
+  testPublish,
+  testSchedule,
+  deleteFacebookPost,
+};
