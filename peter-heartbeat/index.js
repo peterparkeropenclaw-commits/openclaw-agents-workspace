@@ -36,6 +36,8 @@ const FACEBOOK_API_HOST = '127.0.0.1';
 const FACEBOOK_API_PORT = Number(process.env.FACEBOOK_LOCAL_API_PORT || 3216);
 const FACEBOOK_CALLBACK_ALLOWED_UPDATES = JSON.stringify(['callback_query', 'message']);
 const RESCHEDULE_PROMPTS = new Map();
+const SCHEDULE_PICKERS = new Map(); // draftId → { chatId, label, requestedAt }
+const CUSTOM_TIME_PENDING = new Map(); // chatId → { draftId, requestedAt }
 let telegramPollingOffset = 0;
 let telegramPollingStarted = false;
 
@@ -258,6 +260,76 @@ function startOfTodayLondon(now = new Date()) {
   return new Date(get('year'), get('month') - 1, get('day'));
 }
 
+function parsePresetTime(preset, now = new Date()) {
+  const nowUnix = Math.floor(now.getTime() / 1000);
+  const match = String(preset || '').match(/^(\d+)h$/);
+  if (match) return nowUnix + Number(match[1]) * 3600;
+  if (preset === 't9pm') {
+    const today = startOfTodayLondon(now);
+    const t = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 21, 0, 0, 0);
+    return t.getTime() > now.getTime() ? Math.floor(t.getTime() / 1000) : null;
+  }
+  if (preset === 'tm8am') {
+    const today = startOfTodayLondon(now);
+    const t = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 8, 0, 0, 0);
+    return Math.floor(t.getTime() / 1000);
+  }
+  return null;
+}
+
+async function sendScheduleTimePicker(draftId, draft, chatId) {
+  const labelPart = draft.label ? ` — ${draft.label}` : '';
+  const indexPart = (draft.post_index && draft.total_posts)
+    ? `📌 Post ${draft.post_index}/${draft.total_posts}${labelPart}`
+    : `📌 Post${labelPart}`;
+  const message = `🕐 When do you want to post this?\n\n${indexPart}`;
+  const buttons = [
+    [
+      { text: 'In 1 hour', callback_data: `facebook:${draftId}:timepick:1h` },
+      { text: 'In 3 hours', callback_data: `facebook:${draftId}:timepick:3h` },
+      { text: 'In 6 hours', callback_data: `facebook:${draftId}:timepick:6h` },
+    ],
+    [
+      { text: 'In 12 hours', callback_data: `facebook:${draftId}:timepick:12h` },
+      { text: 'Tonight 9pm', callback_data: `facebook:${draftId}:timepick:t9pm` },
+      { text: 'Tomorrow 8am', callback_data: `facebook:${draftId}:timepick:tm8am` },
+    ],
+    [
+      { text: 'Custom time ⌨️', callback_data: `facebook:${draftId}:timepick:custom` },
+    ],
+  ];
+  SCHEDULE_PICKERS.set(draftId, { chatId, label: indexPart, requestedAt: Date.now() });
+  const resolvedChatId = chatId || MISSION_CONTROL_CHAT_ID;
+  const res = await fetch(`https://api.telegram.org/bot${MISSION_CONTROL_BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: resolvedChatId, text: message, reply_markup: { inline_keyboard: buttons } }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram time picker failed: ${data.description}`);
+  return data;
+}
+
+async function sendScheduleConfirmation(draft, chatId) {
+  const labelPart = draft.label ? ` — ${draft.label}` : '';
+  const indexPart = (draft.post_index && draft.total_posts)
+    ? `Post ${draft.post_index}/${draft.total_posts}${labelPart}`
+    : `Post${labelPart}`;
+  const formatted = formatRescheduleConfirmation(draft.scheduled_publish_time);
+  const message = `✅ Scheduled\n\n📌 ${indexPart}\n📅 ${formatted}`;
+  const buttons = [[
+    { text: '🕐 Reschedule', callback_data: `facebook:${draft.id}:reschedule` },
+    { text: '❌ Cancel', callback_data: `facebook:${draft.id}:cancel` },
+  ]];
+  const resolvedChatId = chatId || MISSION_CONTROL_CHAT_ID;
+  const res = await fetch(`https://api.telegram.org/bot${MISSION_CONTROL_BOT_TOKEN}/sendMessage`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: resolvedChatId, text: message, reply_markup: { inline_keyboard: buttons } }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram confirmation failed: ${data.description}`);
+  return data;
+}
+
 function parseSimpleRescheduleTime(input, now = new Date()) {
   const raw = String(input || '').trim();
   if (!raw) return null;
@@ -308,6 +380,38 @@ function parseSimpleRescheduleTime(input, now = new Date()) {
     if (time) return buildTimestamp(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1), time);
   }
 
+  const inHoursMatch = normalized.match(/^in\s+(\d+(?:\.\d+)?)\s+hours?$/i);
+  if (inHoursMatch) return Math.round(Math.floor(now.getTime() / 1000) + Number(inHoursMatch[1]) * 3600);
+
+  const tonightMatch = normalized.match(/^tonight(?:\s+at)?\s+(.+)$/i);
+  if (tonightMatch) {
+    const time = parseTime(tonightMatch[1]);
+    // "tonight at 10" means 10pm unless explicitly am
+    if (time) {
+      if (!tonightMatch[1].match(/\bam\b/i) && time.hour < 12) time.hour += 12;
+      return buildTimestamp(today, time);
+    }
+  }
+
+  // "Monday morning" etc.
+  const morningEveningMatch = normalized.match(/^(sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|tomorrow|today)\s+(morning|afternoon|evening|night)$/i);
+  if (morningEveningMatch) {
+    const dayWord = morningEveningMatch[1].toLowerCase();
+    const period = morningEveningMatch[2].toLowerCase();
+    const periodHour = { morning: 8, afternoon: 14, evening: 18, night: 20 }[period] || 9;
+    const time = { hour: periodHour, minute: 0 };
+    if (dayWord === 'today') return buildTimestamp(today, time);
+    if (dayWord === 'tomorrow') return buildTimestamp(new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1), time);
+    const dayMap2 = { sun:0, sunday:0, mon:1, monday:1, tue:2, tues:2, tuesday:2, wed:3, wednesday:3, thu:4, thur:4, thurs:4, thursday:4, fri:5, friday:5, sat:6, saturday:6 };
+    const target = dayMap2[dayWord];
+    if (target !== undefined) {
+      const current = today.getDay();
+      const delta = (target - current + 7) % 7 || 7;
+      const candidateDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + delta);
+      return buildTimestamp(candidateDate, time);
+    }
+  }
+
   const dayMap = { sun:0, sunday:0, mon:1, monday:1, tue:2, tues:2, tuesday:2, wed:3, wednesday:3, thu:4, thur:4, thurs:4, thursday:4, fri:5, friday:5, sat:6, saturday:6 };
   const weekdayMatch = normalized.match(/^(sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)(?:\s+at)?\s+(.+)$/i);
   if (weekdayMatch) {
@@ -331,36 +435,74 @@ function parseSimpleRescheduleTime(input, now = new Date()) {
 
 async function processFacebookCallback(callback) {
   if (!callback?.data) return { ok: true, ignored: true };
-  const [scope, draftId, action] = String(callback.data).split(':');
+  const parts = String(callback.data).split(':');
+  const scope = parts[0];
+  const draftId = parts[1];
+  const action = parts[2];
+  const actionParam = parts.slice(3).join(':');
   if (scope !== 'facebook' || !draftId || !action) return { ok: false, error: 'invalid_callback' };
 
-  console.log(`[FB callback] received: draftId=${draftId} action=${action}`);
+  console.log(`[FB callback] received: draftId=${draftId} action=${action} param=${actionParam}`);
+  const chatId = String(callback.message?.chat?.id || MISSION_CONTROL_CHAT_ID);
 
   if (action === 'schedule') {
-    const draft = await approveFacebookDraft(draftId, {
-      action: 'schedule',
-      scheduled_time: listFacebookDrafts().find((item) => item.id === draftId)?.scheduled_publish_time,
-    });
-    RESCHEDULE_PROMPTS.delete(String(callback.message?.chat?.id || ''));
-    await answerTelegramCallback(callback.id, 'Draft scheduled');
-    await sendTelegram(`✅ Scheduled: ${escapeHtml(firstLine(draft.text))} - going live ${escapeHtml(formatTelegramSchedule(draft.scheduled_publish_time))}`);
-    return { ok: true, action, draftId };
+    const drafts = listFacebookDrafts();
+    const draft = drafts.find((item) => item.id === draftId);
+    if (!draft) return { ok: false, error: 'draft_not_found' };
+    await answerTelegramCallback(callback.id, 'Choose a time');
+    await sendScheduleTimePicker(draftId, draft, chatId);
+    return { ok: true, action, draftId, awaiting_time: true };
   }
 
   if (action === 'reject') {
     const draft = rejectFacebookDraft(draftId);
-    RESCHEDULE_PROMPTS.delete(String(callback.message?.chat?.id || ''));
+    RESCHEDULE_PROMPTS.delete(chatId);
+    CUSTOM_TIME_PENDING.delete(chatId);
+    SCHEDULE_PICKERS.delete(draftId);
     await answerTelegramCallback(callback.id, 'Draft rejected');
     await sendTelegram(`❌ Rejected: ${escapeHtml(firstLine(draft.text))}`);
     return { ok: true, action, draftId };
   }
 
+  if (action === 'cancel') {
+    const draft = rejectFacebookDraft(draftId);
+    CUSTOM_TIME_PENDING.delete(chatId);
+    SCHEDULE_PICKERS.delete(draftId);
+    await answerTelegramCallback(callback.id, 'Post cancelled');
+    await sendTelegram(`❌ Cancelled: ${escapeHtml(firstLine(draft.text))}`);
+    return { ok: true, action, draftId };
+  }
+
   if (action === 'reschedule') {
-    const chatId = String(callback.message?.chat?.id || MISSION_CONTROL_CHAT_ID);
-    RESCHEDULE_PROMPTS.set(chatId, { draftId, requestedAt: Date.now() });
-    await answerTelegramCallback(callback.id, 'Send a new time');
-    await sendTelegram("Reply with your preferred time (e.g. 'tomorrow 9am' or 'Fri 3pm')", { chatId });
+    const drafts = listFacebookDrafts();
+    const draft = drafts.find((item) => item.id === draftId);
+    if (!draft) return { ok: false, error: 'draft_not_found' };
+    await answerTelegramCallback(callback.id, 'Choose a new time');
+    await sendScheduleTimePicker(draftId, draft, chatId);
     return { ok: true, action, draftId, awaiting_time: true };
+  }
+
+  if (action === 'timepick') {
+    if (!actionParam) return { ok: false, error: 'missing_param' };
+    if (actionParam === 'custom') {
+      CUSTOM_TIME_PENDING.set(chatId, { draftId, requestedAt: Date.now() });
+      await answerTelegramCallback(callback.id, 'Type your preferred time');
+      await sendTelegram("Reply with your preferred time (e.g. 'tomorrow 7am', 'Friday 9pm', 'in 2 hours')", { chatId });
+      return { ok: true, action, draftId, awaiting_custom: true };
+    }
+
+    const scheduledTime = parsePresetTime(actionParam);
+    if (!scheduledTime) {
+      await answerTelegramCallback(callback.id, 'That time has passed — pick another');
+      return { ok: false, error: 'preset_time_past' };
+    }
+
+    const draft = await approveFacebookDraft(draftId, { action: 'schedule', scheduled_time: scheduledTime });
+    SCHEDULE_PICKERS.delete(draftId);
+    CUSTOM_TIME_PENDING.delete(chatId);
+    await answerTelegramCallback(callback.id, 'Scheduled ✅');
+    await sendScheduleConfirmation(draft, chatId);
+    return { ok: true, action, draftId, scheduled_time: scheduledTime };
   }
 
   return { ok: false, error: 'unsupported_action' };
@@ -391,9 +533,50 @@ async function processRescheduleReply(message) {
   return true;
 }
 
+async function processCustomTimeReply(message) {
+  const chatId = String(message?.chat?.id || '');
+  const pending = CUSTOM_TIME_PENDING.get(chatId);
+  const text = String(message?.text || '').trim();
+  if (!pending || !text) return false;
+
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const maxUnix = nowUnix + 24 * 60 * 60;
+
+  // First try natural language parser
+  let scheduledTime = parseSimpleRescheduleTime(text);
+  // Also try "in N hours" pattern not covered by parseSimpleRescheduleTime
+  if (!scheduledTime) {
+    const inHours = text.match(/^in\s+(\d+(?:\.\d+)?)\s+hours?$/i);
+    if (inHours) scheduledTime = Math.round(nowUnix + Number(inHours[1]) * 3600);
+  }
+
+  if (!scheduledTime) {
+    await sendTelegram("Couldn't parse that time. Try 'tomorrow 7am', 'Friday 9pm', or 'in 2 hours'.", { chatId });
+    return true;
+  }
+
+  if (scheduledTime <= nowUnix) {
+    await sendTelegram("That time is in the past. Try a time in the next 24 hours.", { chatId });
+    return true;
+  }
+
+  if (scheduledTime > maxUnix) {
+    await sendTelegram("That time is more than 24 hours away. Please pick a time within the next 24 hours.", { chatId });
+    return true;
+  }
+
+  const draft = await approveFacebookDraft(pending.draftId, { action: 'schedule', scheduled_time: scheduledTime });
+  CUSTOM_TIME_PENDING.delete(chatId);
+  SCHEDULE_PICKERS.delete(pending.draftId);
+  await sendScheduleConfirmation(draft, chatId);
+  return true;
+}
+
 async function handleTelegramUpdate(update) {
   if (update.callback_query) return processFacebookCallback(update.callback_query);
   if (update.message?.text) {
+    const handledCustom = await processCustomTimeReply(update.message);
+    if (handledCustom) return { ok: true, handled: true };
     const handled = await processRescheduleReply(update.message);
     return { ok: true, handled };
   }
