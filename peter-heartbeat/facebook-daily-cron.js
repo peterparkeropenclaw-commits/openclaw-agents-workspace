@@ -591,6 +591,11 @@ async function sendTelegram(message, { token, chatId } = {}) {
 }
 
 async function getPageAccessToken(userToken = process.env.FACEBOOK_USER_ACCESS_TOKEN, pageId = process.env.FACEBOOK_PAGE_ID) {
+  // Prefer a direct Page token if available (avoids needing a User token with /me/accounts)
+  if (process.env.FACEBOOK_PAGE_ACCESS_TOKEN) {
+    logFb(`Using direct page token (token: ${redactToken(process.env.FACEBOOK_PAGE_ACCESS_TOKEN)})`);
+    return process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  }
   if (!userToken) throw new Error('FACEBOOK_USER_ACCESS_TOKEN is not configured');
   if (!pageId) throw new Error('FACEBOOK_PAGE_ID is not configured');
   const url = `https://graph.facebook.com/v25.0/me/accounts?fields=id,name,access_token,tasks&access_token=${encodeURIComponent(userToken)}`;
