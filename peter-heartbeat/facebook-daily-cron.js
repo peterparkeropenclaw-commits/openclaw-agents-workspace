@@ -12,7 +12,6 @@ const { chromium } = require('/Users/robotmac/workspace/str-clinic-pdf-generator
 const execFileAsync = promisify(execFile);
 const OUTPUT_ROOT = path.join(__dirname, 'output', 'facebook-daily-cron');
 const DATA_ROOT = path.join(__dirname, 'data', 'facebook-drafts');
-const TOPICS_USED_FILE = path.join(DATA_ROOT, 'topics-used.json');
 const FONT_ASSETS = {
   inter400: path.join(__dirname, 'assets', 'fonts', 'Inter-400.ttf'),
   inter600: path.join(__dirname, 'assets', 'fonts', 'Inter-600.ttf'),
@@ -75,11 +74,6 @@ function getDraftFilePath(id) {
   return path.join(DATA_ROOT, `${id}.json`);
 }
 
-function getTopicsUsedPath() {
-  ensureDir(DATA_ROOT);
-  return TOPICS_USED_FILE;
-}
-
 function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
@@ -121,134 +115,10 @@ function loadDraft(id) {
 function listDrafts() {
   ensureDir(DATA_ROOT);
   return fs.readdirSync(DATA_ROOT)
-    .filter((name) => name.endsWith('.json') && name !== 'topics-used.json')
+    .filter((name) => name.endsWith('.json'))
     .sort()
     .map((name) => JSON.parse(fs.readFileSync(path.join(DATA_ROOT, name), 'utf8')))
     .sort((a, b) => b.created_at - a.created_at);
-}
-
-function openingFingerprint(text, length = 60) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, length);
-}
-
-function openingSentence(text) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
-  return clean.split(/(?<=[.!?])\s+/)[0] || clean;
-}
-
-function charSimilarity(a, b) {
-  const left = String(a || '').toLowerCase().trim();
-  const right = String(b || '').toLowerCase().trim();
-  if (!left || !right) return 0;
-  const min = Math.min(left.length, right.length);
-  let same = 0;
-  for (let i = 0; i < min; i += 1) if (left[i] === right[i]) same += 1;
-  return same / Math.max(left.length, right.length);
-}
-
-function extractDistinctivePhrases(text) {
-  const words = String(text || '').toLowerCase().match(/[a-z]+/g) || [];
-  const stop = new Set(['the', 'and', 'for', 'that', 'with', 'your', 'from', 'this', 'have', 'when', 'into', 'than', 'they', 'their', 'about', 'more', 'most', 'just', 'does', 'feel', 'page', 'host', 'hosts', 'listing', 'airbnb']);
-  const phrases = new Set();
-  for (let i = 0; i <= words.length - 3; i += 1) {
-    const chunk = words.slice(i, i + 3);
-    if (chunk.some((word) => stop.has(word))) continue;
-    phrases.add(chunk.join(' '));
-  }
-  return [...phrases];
-}
-
-function topicSlugFromText(text) {
-  const phrases = extractDistinctivePhrases(text);
-  return slug(phrases[0] || openingFingerprint(text, 48) || 'untitled-topic');
-}
-
-function readTopicsUsed() {
-  try {
-    return JSON.parse(fs.readFileSync(getTopicsUsedPath(), 'utf8'));
-  } catch (_) {
-    return { topics: [] };
-  }
-}
-
-function writeTopicsUsed(payload) {
-  fs.writeFileSync(getTopicsUsedPath(), JSON.stringify(payload, null, 2));
-  return payload;
-}
-
-function recordTopicUsage(slugValue, timestamp = nowUnix()) {
-  const data = readTopicsUsed();
-  const existing = Array.isArray(data.topics) ? data.topics.find((topic) => topic.slug === slugValue) : null;
-  if (existing) {
-    existing.last_used = timestamp;
-    existing.count = Number(existing.count || 0) + 1;
-  } else {
-    data.topics = Array.isArray(data.topics) ? data.topics : [];
-    data.topics.push({ slug: slugValue, last_used: timestamp, count: 1 });
-  }
-  data.topics.sort((a, b) => Number(b.last_used || 0) - Number(a.last_used || 0));
-  return writeTopicsUsed(data);
-}
-
-function findLocalDuplicate(text, drafts = listDrafts()) {
-  const fingerprint = openingFingerprint(text);
-  const phrases = extractDistinctivePhrases(text);
-  const sourceSentence = openingSentence(text);
-  return drafts.find((draft) => {
-    const existingFingerprint = openingFingerprint(draft.text);
-    if (fingerprint && fingerprint === existingFingerprint) return true;
-    if (charSimilarity(sourceSentence, openingSentence(draft.text)) >= 0.8) return true;
-    const existingPhrases = new Set(extractDistinctivePhrases(draft.text));
-    return phrases.some((phrase) => existingPhrases.has(phrase));
-  }) || null;
-}
-
-async function fetchRecentFacebookFeed(pageToken, limit = 25) {
-  const url = `https://graph.facebook.com/v25.0/${process.env.FACEBOOK_PAGE_ID}/feed?fields=message,created_time&limit=${limit}&access_token=${encodeURIComponent(pageToken)}`;
-  const res = await fetch(url);
-  const body = await res.json();
-  if (!res.ok || body.error) throw new Error(body.error?.message || `Facebook feed fetch failed (${res.status})`);
-  return Array.isArray(body.data) ? body.data : [];
-}
-
-function findLiveDuplicate(text, feed = [], recentTopicSlugs = new Set()) {
-  const draftSentence = openingSentence(text);
-  const draftSlug = topicSlugFromText(text);
-  if (recentTopicSlugs.has(draftSlug)) return { reason: 'topic-recently-used', match: { message: draftSlug } };
-  const phrases = new Set(extractDistinctivePhrases(text));
-  for (const post of feed) {
-    const message = String(post.message || '').trim();
-    if (!message) continue;
-    if (charSimilarity(draftSentence, openingSentence(message)) >= 0.8) return { reason: 'opening-line-overlap', match: post };
-    const existingPhrases = extractDistinctivePhrases(message);
-    if (existingPhrases.some((phrase) => phrases.has(phrase))) return { reason: 'topic-phrase-overlap', match: post };
-    if (topicSlugFromText(message) === draftSlug) return { reason: 'topic-angle-overlap', match: post };
-  }
-  return null;
-}
-
-function getDateContext(now = new Date()) {
-  const month = new Intl.DateTimeFormat('en-GB', { month: 'long', timeZone: 'Europe/London' }).format(now);
-  const monthIndex = Number(new Intl.DateTimeFormat('en-GB', { month: 'numeric', timeZone: 'Europe/London' }).format(now));
-  const season = monthIndex >= 3 && monthIndex <= 5 ? 'spring' : monthIndex >= 6 && monthIndex <= 8 ? 'summer' : monthIndex >= 9 && monthIndex <= 11 ? 'autumn' : 'winter';
-  const year = Number(new Intl.DateTimeFormat('en-GB', { year: 'numeric', timeZone: 'Europe/London' }).format(now));
-  return {
-    currentMonth: month,
-    currentSeason: season,
-    ukBankHolidays: [`Early May Bank Holiday ${year}`, `Spring Bank Holiday ${year}`, `Summer Bank Holiday ${year}`],
-  };
-}
-
-function formatTelegramSchedule(unixTime) {
-  if (!unixTime) return 'Unscheduled';
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
-  }).format(new Date(unixTime * 1000));
-}
-
-function draftPreview(text, max = 200) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 function requireFutureScheduledTime(unixTime) {
@@ -475,7 +345,6 @@ function localFallbackPosts() {
 }
 
 async function openAiGeneration() {
-  const dateContext = getDateContext();
   const prompt = `Generate exactly 10 unique Facebook posts for STR Clinic as strict JSON.
 Return ONLY JSON with shape {"posts":[...] }.
 Each post object must include:
@@ -498,10 +367,7 @@ Constraints:
 - Editorial statement, not ad copy.
 - UK English.
 - No repeated topics.
-- Make the 10 topics genuinely distinct and useful.
-- Current month: ${dateContext.currentMonth}
-- Current season: ${dateContext.currentSeason}
-- UK bank holidays to keep in mind: ${dateContext.ukBankHolidays.join(', ')}.`;
+- Make the 10 topics genuinely distinct and useful.`;
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -794,10 +660,7 @@ async function deleteFacebookPost(postId, pageToken) {
 
 async function createDraft({ text, image_path = null, scheduled_publish_time = null, status = 'draft' }) {
   validateDraftContent(text);
-  const localDuplicate = findLocalDuplicate(text);
-  if (localDuplicate) throw new Error(`Duplicate blocked by local draft store: ${localDuplicate.id}`);
   const draft = createDraftRecord({ text, image_path, status, scheduled_publish_time });
-  draft.topic_slug = topicSlugFromText(text);
   if (draft.status === 'pending_approval') logFb(`Draft validation passed: ${draft.id}`);
   saveDraft(draft);
   if (draft.scheduled_publish_time) logFb(`Draft created: ${draft.id} scheduled for ${new Date(draft.scheduled_publish_time * 1000).toISOString()}`);
@@ -825,7 +688,6 @@ async function approveDraft(draftId, { action, scheduled_time }) {
       draft.published_at = Date.now();
       draft.publish_error = null;
       saveDraft(draft);
-      recordTopicUsage(draft.topic_slug || topicSlugFromText(draft.text), Math.floor(draft.published_at / 1000));
       logFb(`Publish succeeded: ${draft.id} fb_post_id=${draft.facebook_post_id}`);
       return draft;
     }
@@ -837,7 +699,6 @@ async function approveDraft(draftId, { action, scheduled_time }) {
     draft.facebook_post_id = result.post_id || result.id || null;
     draft.publish_error = null;
     saveDraft(draft);
-    recordTopicUsage(draft.topic_slug || topicSlugFromText(draft.text), scheduled_time);
     logFb(`Schedule succeeded: ${draft.id} scheduled_for=${new Date(scheduled_time * 1000).toISOString()}`);
     return draft;
   } catch (error) {
@@ -857,38 +718,11 @@ async function createDraftBatch({ count = 10, includeImages = false } = {}) {
   if (!Array.isArray(posts) || posts.length < count) posts = localFallbackPosts();
   posts = normalisePosts(posts).slice(0, count);
 
-  const existingDrafts = listDrafts();
-  const recentTopicSlugs = new Set(existingDrafts
-    .filter((draft) => ['published', 'scheduled'].includes(draft.status))
-    .slice(0, 10)
-    .map((draft) => draft.topic_slug || topicSlugFromText(draft.text)));
-  let liveFeed = [];
-  try {
-    const pageToken = await getPageAccessToken();
-    liveFeed = await fetchRecentFacebookFeed(pageToken, 25);
-    logFb(`Live feed fetch returned ${liveFeed.length} posts`);
-  } catch (error) {
-    logFb(`Live feed fetch skipped: ${error.message}`);
-  }
-
   const scheduled = [];
-  const skipped = [];
   let slot = nextCadenceSlot();
   for (const post of posts) {
     const draftText = draftTextFromPost(post);
     validateDraftContent(draftText);
-    const localDuplicate = findLocalDuplicate(draftText, existingDrafts.concat(scheduled));
-    if (localDuplicate) {
-      skipped.push({ topic: post.topic, reason: 'local-duplicate', match: localDuplicate.id });
-      logFb(`Skipped duplicate draft (local): ${post.topic} -> ${localDuplicate.id}`);
-      continue;
-    }
-    const liveDuplicate = findLiveDuplicate(draftText, liveFeed, recentTopicSlugs);
-    if (liveDuplicate) {
-      skipped.push({ topic: post.topic, reason: liveDuplicate.reason, match: openingSentence(liveDuplicate.match?.message || '') });
-      logFb(`Skipped duplicate draft (live/topic): ${post.topic} -> ${liveDuplicate.reason}`);
-      continue;
-    }
     const imagePath = includeImages ? path.join(OUTPUT_ROOT, londonDateParts().isoDate, `post-${String(post.index).padStart(2, '0')}.png`) : null;
     const draft = createDraftRecord({
       text: draftText,
@@ -896,46 +730,15 @@ async function createDraftBatch({ count = 10, includeImages = false } = {}) {
       status: 'pending_approval',
       scheduled_publish_time: Math.floor(slot.getTime() / 1000),
     });
-    draft.topic_slug = topicSlugFromText(draftText);
     saveDraft(draft);
     logFb(`Draft validation passed: ${draft.id}`);
     logFb(`Draft created: ${draft.id} scheduled for ${slot.toISOString()}`);
     scheduled.push(draft);
-    existingDrafts.push(draft);
     slot = new Date(slot.getTime() + Math.max(1, Number(process.env.FACEBOOK_POST_CADENCE_HOURS || 8)) * 60 * 60 * 1000);
   }
   if (scheduled.length) logFb(`Generated ${scheduled.length} drafts, scheduled from ${new Date(scheduled[0].scheduled_publish_time * 1000).toISOString()} to ${new Date(scheduled[scheduled.length - 1].scheduled_publish_time * 1000).toISOString()}`);
-  return { drafts: scheduled, skipped, liveFeedCount: liveFeed.length, topicsUsed: readTopicsUsed() };
+  return scheduled;
 }
-
-async function sendTelegramWithButtons(message, buttons, { token, chatId } = {}) {
-  const resolvedToken = token || process.env.MISSION_CONTROL_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
-  const resolvedChatId = chatId || process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
-  const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: resolvedChatId, text: message, reply_markup: { inline_keyboard: buttons } })
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(`Telegram failed: ${data.description}`);
-  return data;
-}
-
-async function sendDraftApprovalRequest(draft) {
-  const message = `📋 Facebook draft awaiting approval\n\n${draftPreview(draft.text)}\n\nScheduled: ${formatTelegramSchedule(draft.scheduled_publish_time)}`;
-  return sendTelegramWithButtons(message, [[
-    { text: '✅ Schedule', callback_data: `facebook:${draft.id}:schedule` },
-    { text: '❌ Reject', callback_data: `facebook:${draft.id}:reject` },
-  ]]);
-}
-
-function rejectDraft(draftId) {
-  const draft = loadDraft(draftId);
-  draft.status = 'rejected';
-  draft.publish_error = null;
-  saveDraft(draft);
-  return draft;
-}
-
 
 async function healthcheck() {
   const token = await getPageAccessToken();
@@ -992,8 +795,7 @@ async function run({ manual = false, generateBatch = true } = {}) {
   fs.writeFileSync(path.join(packDir, 'manifest.json'), JSON.stringify({ date: isoDate, source, count: posts.length, posts }, null, 2));
   await renderGraphics(posts, packDir);
 
-  const batch = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), includeImages: true }) : { drafts: [], skipped: [], liveFeedCount: 0, topicsUsed: readTopicsUsed() };
-  const drafts = batch.drafts;
+  const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), includeImages: true }) : [];
   const driveUrl = await uploadPack(packDir, isoDate);
   const summaryLines = posts.map((post, index) => {
     const firstLine = post.hook || post.paragraphs?.[0] || '';
@@ -1005,10 +807,7 @@ async function run({ manual = false, generateBatch = true } = {}) {
     chatId: process.env.MISSION_CONTROL_CHAT_ID || '-5085897499',
   });
 
-  const approvalMessages = [];
-  for (const draft of drafts) approvalMessages.push(await sendDraftApprovalRequest(draft));
-
-  return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts, drafts, skipped: batch.skipped, liveFeedCount: batch.liveFeedCount, topicsUsed: batch.topicsUsed, approvalMessages, telegramMessage };
+  return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts, drafts, telegramMessage };
 }
 
 function scheduleDailyFacebookCronJob({ logger = console } = {}) {
@@ -1070,15 +869,7 @@ module.exports = {
   listDrafts,
   loadDraft,
   approveDraft,
-  rejectDraft,
   getPageAccessToken,
-  fetchRecentFacebookFeed,
-  findLocalDuplicate,
-  findLiveDuplicate,
-  readTopicsUsed,
-  sendDraftApprovalRequest,
-  formatTelegramSchedule,
-  getDateContext,
   healthcheck,
   testPublish,
   testSchedule,

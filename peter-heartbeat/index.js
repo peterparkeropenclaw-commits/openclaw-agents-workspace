@@ -14,8 +14,6 @@ const {
   testSchedule: facebookTestSchedule,
   listDrafts: listFacebookDrafts,
   approveDraft: approveFacebookDraft,
-  rejectDraft: rejectFacebookDraft,
-  formatTelegramSchedule,
 } = require('./facebook-daily-cron');
 
 const MISSION_CONTROL_BOT_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN;
@@ -217,45 +215,6 @@ async function readJsonBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-async function answerTelegramCallback(callbackQueryId, text) {
-  if (!MISSION_CONTROL_BOT_TOKEN) return false;
-  const res = await fetch(`https://api.telegram.org/bot${MISSION_CONTROL_BOT_TOKEN}/answerCallbackQuery`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
-  });
-  const data = await res.json();
-  return data.ok;
-}
-
-function firstLine(text) {
-  return String(text || '').split(/\r?\n/).find(Boolean) || String(text || '').slice(0, 80);
-}
-
-async function handleTelegramCallback(req, res) {
-  const body = await readJsonBody(req);
-  const callback = body.callback_query;
-  if (!callback?.data) return sendJson(res, 200, { ok: true, ignored: true });
-  const [scope, draftId, action] = String(callback.data).split(':');
-  if (scope !== 'facebook' || !draftId || !action) return sendJson(res, 400, { error: 'invalid_callback' });
-
-  if (action === 'schedule') {
-    const draft = await approveFacebookDraft(draftId, { action: 'schedule', scheduled_time: listFacebookDrafts().find((item) => item.id === draftId)?.scheduled_publish_time });
-    await answerTelegramCallback(callback.id, 'Draft scheduled');
-    await sendTelegram(`✅ Scheduled: ${escapeHtml(firstLine(draft.text))} — going live ${escapeHtml(formatTelegramSchedule(draft.scheduled_publish_time))}`);
-    return sendJson(res, 200, { ok: true, action, draftId });
-  }
-
-  if (action === 'reject') {
-    const draft = rejectFacebookDraft(draftId);
-    await answerTelegramCallback(callback.id, 'Draft rejected');
-    await sendTelegram(`❌ Rejected: ${escapeHtml(firstLine(draft.text))}`);
-    return sendJson(res, 200, { ok: true, action, draftId });
-  }
-
-  return sendJson(res, 400, { error: 'unsupported_action' });
-}
-
 function isAuthorized(req) {
   const expected = process.env.TRIGGER_AUTH_TOKEN;
   if (!expected) return true;
@@ -264,8 +223,8 @@ function isAuthorized(req) {
 }
 
 async function handleFacebookApi(req, res) {
+  if (!isAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
   const url = new URL(req.url, `http://${FACEBOOK_API_HOST}:${FACEBOOK_API_PORT}`);
-  if (url.pathname !== '/telegram/callback' && !isAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
 
   try {
     if (req.method === 'GET' && url.pathname === '/facebook/health') {
@@ -279,9 +238,6 @@ async function handleFacebookApi(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/facebook/drafts') {
       return sendJson(res, 200, { drafts: listFacebookDrafts() });
-    }
-    if (req.method === 'POST' && url.pathname === '/telegram/callback') {
-      return handleTelegramCallback(req, res);
     }
     if (req.method === 'POST' && url.pathname.startsWith('/facebook/approve/')) {
       const draftId = decodeURIComponent(url.pathname.split('/').pop());
