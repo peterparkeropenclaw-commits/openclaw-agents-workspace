@@ -467,20 +467,17 @@ function cleanSingleNounTag(tag) {
 }
 
 function enforceHeadlineEndingEmphasis(headline, emphasis) {
+  // Never rearrange the headline — the LLM already embeds the emphasis word in the correct position.
+  // This function only normalises the emphasis word for rendering; headline word order is never touched.
   const cleanHeadline = String(headline || '').replace(/\s+/g, ' ').trim();
   const cleanEmphasis = String(emphasis || '').replace(/\s+/g, ' ').trim().split(' ')[0] || '';
   if (!cleanHeadline) return { headline: '', emphasis: cleanEmphasis };
   if (!cleanEmphasis) {
+    // No emphasis supplied — pick last word of headline as amber word
     const lastWord = cleanHeadline.split(' ').pop();
     return { headline: cleanHeadline, emphasis: lastWord };
   }
-  const escaped = cleanEmphasis.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // If the emphasis word already appears in the headline, don't move it — just return as-is
-  if (new RegExp(escaped, 'i').test(cleanHeadline)) {
-    return { headline: cleanHeadline, emphasis: cleanEmphasis };
-  }
-  const without = cleanHeadline.replace(new RegExp(escaped, 'ig'), '').replace(/\s+/g, ' ').trim().replace(/[,:;.-]+$/,'');
-  return { headline: `${without} ${cleanEmphasis}`.trim(), emphasis: cleanEmphasis };
+  return { headline: cleanHeadline, emphasis: cleanEmphasis };
 }
 
 function normalisePosts(posts) {
