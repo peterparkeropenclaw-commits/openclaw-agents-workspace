@@ -247,7 +247,7 @@ function localFallbackPosts() {
       close: 'Rate should support a strong offer, not rescue a vague one.',
       hashtags: ['#AirbnbHost', '#UKHosts', '#PricingStrategy', '#ShortTermRental'],
       categoryLabel: 'PRICING BUILDS MARGIN',
-      headline: 'Discounting usually starts after weak positioning trust',
+      headline: 'Most soft months start with a positioning TRUST problem',
       emphasis: 'trust',
       sideTags: ['MARGIN', 'POSITIONING', 'RATE'],
       bodyCopy: 'A soft calendar does not automatically mean the answer is a cheaper night. Stronger positioning usually protects rate before price cuts do.'
@@ -263,7 +263,7 @@ function localFallbackPosts() {
       close: 'Photo quality matters. Photo order converts.',
       hashtags: ['#AirbnbPhotos', '#UKAirbnb', '#ListingOptimisation', '#STRTips'],
       categoryLabel: 'PHOTO ORDER BUILDS TRUST',
-      headline: 'Your best photos still fail without a clear sequence trust',
+      headline: 'Photo sequence drives guest TRUST more than quality alone',
       emphasis: 'trust',
       sideTags: ['SEQUENCE', 'CLARITY', 'CONFIDENCE'],
       bodyCopy: 'The first few frames should sell the stay and remove uncertainty fast. If the page feels harder to understand with every swipe, conversion leaks.'
@@ -279,7 +279,7 @@ function localFallbackPosts() {
       close: 'The better question is whether your occupancy came from strength or concession.',
       hashtags: ['#RevenueStrategy', '#AirbnbBusiness', '#UKHosts', '#HolidayLets'],
       categoryLabel: 'OCCUPANCY HIDES LEAKAGE',
-      headline: 'A full calendar can still weaken your margin positioning',
+      headline: "A full calendar doesn't always mean strong POSITIONING",
       emphasis: 'positioning',
       sideTags: ['MARGIN', 'OCCUPANCY', 'POSITIONING'],
       bodyCopy: 'Healthy occupancy matters most when the listing earns it cleanly. If the diary is full for the wrong reasons, the business still leaks.'
@@ -295,8 +295,8 @@ function localFallbackPosts() {
       close: 'The goal is not more adjectives. It is a clearer promise.',
       hashtags: ['#AirbnbListing', '#UKHosts', '#STRMarketing', '#HostAdvice'],
       categoryLabel: 'TITLE CLARITY SELLS',
-      headline: 'Generic listing titles make good stays feel interchangeable fast',
-      emphasis: 'fast',
+      headline: 'Generic titles make great stays feel INTERCHANGEABLE',
+      emphasis: 'interchangeable',
       sideTags: ['TITLE', 'DISTINCTION', 'SEARCH'],
       bodyCopy: 'Search results are crowded. A sharper title helps the right guest understand what is different before they click.'
     },
@@ -311,7 +311,7 @@ function localFallbackPosts() {
       close: 'Reviews work hardest when they validate a clear position.',
       hashtags: ['#AirbnbReviews', '#ShortTermRental', '#UKHosts', '#HostStrategy'],
       categoryLabel: 'REVIEWS CONFIRM PROMISE',
-      headline: 'Reviews convert better when they reinforce your core promise proof',
+      headline: 'Reviews that match your listing promise become PROOF',
       emphasis: 'proof',
       sideTags: ['PROOF', 'TRUST', 'REPUTATION'],
       bodyCopy: 'Guest feedback should strengthen the story your listing already tells. That alignment is what builds confidence quickly.'
@@ -327,8 +327,8 @@ function localFallbackPosts() {
       close: 'The easiest listing to trust usually wins more often.',
       hashtags: ['#Conversion', '#AirbnbTips', '#UKHosts', '#ListingStrategy'],
       categoryLabel: 'FRICTION LOWERS TRUST',
-      headline: 'Most conversion drops start with avoidable listing friction first',
-      emphasis: 'first',
+      headline: 'Most booking drops trace back to listing FRICTION',
+      emphasis: 'friction',
       sideTags: ['FRICTION', 'CLARITY', 'TRUST'],
       bodyCopy: 'Guests reward pages that feel easy to process. Simplifying the decision path usually improves performance faster than adding more detail.'
     },
@@ -343,8 +343,8 @@ function localFallbackPosts() {
       close: 'Commercially sharp hosts adapt the argument, not just the rate.',
       hashtags: ['#SeasonalStrategy', '#AirbnbUK', '#HostAdvice', '#STRMarket'],
       categoryLabel: 'SEASONAL CONTEXT MATTERS',
-      headline: 'Seasonal demand changes what your listing needs to signal now',
-      emphasis: 'now',
+      headline: 'Seasonal demand shifts what your listing needs to SIGNAL',
+      emphasis: 'signal',
       sideTags: ['SEASONALITY', 'DEMAND', 'CONTEXT'],
       bodyCopy: 'The message that converts in one season can underperform in another. Good operators adapt emphasis while keeping the brand signal intact.'
     },
@@ -359,8 +359,8 @@ function localFallbackPosts() {
       close: 'Benchmark the listings that shape the guest decision, not just the map view.',
       hashtags: ['#CompetitorAnalysis', '#AirbnbStrategy', '#UKHosts', '#RevenueManagement'],
       categoryLabel: 'COMPETITOR SETS MATTER',
-      headline: 'Bad comparisons usually produce weaker pricing decisions later',
-      emphasis: 'later',
+      headline: 'Weak comparables lead to weaker pricing DECISIONS',
+      emphasis: 'decisions',
       sideTags: ['COMPETITION', 'BENCHMARK', 'RATE'],
       bodyCopy: 'The wrong comp set creates noisy decisions. Stronger operators compare against the listings that truly compete for the same guest.'
     },
@@ -375,8 +375,8 @@ function localFallbackPosts() {
       close: 'The pre-arrival impression is part of the stay whether hosts manage it or not.',
       hashtags: ['#GuestExperience', '#AirbnbHost', '#UKHolidayLets', '#BrandTrust'],
       categoryLabel: 'EXPERIENCE STARTS EARLY',
-      headline: 'Guest experience starts before check-in with confidence first',
-      emphasis: 'first',
+      headline: 'Guest experience starts before check-in with CONFIDENCE',
+      emphasis: 'confidence',
       sideTags: ['EXPERIENCE', 'TRUST', 'EXPECTATION'],
       bodyCopy: 'The listing sets the tone before the guest arrives. Strong presentation reduces doubt and improves how the stay is received later.'
     },
@@ -391,8 +391,8 @@ function localFallbackPosts() {
       close: 'Better hosting decisions come from cleaner diagnosis.',
       hashtags: ['#HostStrategy', '#AirbnbAdvice', '#DecisionMaking', '#STRGrowth'],
       categoryLabel: 'DIAGNOSIS PRECEDES ACTION',
-      headline: 'Better listing decisions start with cleaner diagnosis first',
-      emphasis: 'first',
+      headline: 'Better listing results start with cleaner DIAGNOSIS',
+      emphasis: 'diagnosis',
       sideTags: ['DIAGNOSIS', 'DISCIPLINE', 'DECISIONS'],
       bodyCopy: 'Commercially useful changes start with understanding the actual bottleneck. Evidence-led decisions usually outperform reactive edits.'
     }
@@ -475,6 +475,10 @@ function enforceHeadlineEndingEmphasis(headline, emphasis) {
     return { headline: cleanHeadline, emphasis: lastWord };
   }
   const escaped = cleanEmphasis.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // If the emphasis word already appears in the headline, don't move it — just return as-is
+  if (new RegExp(escaped, 'i').test(cleanHeadline)) {
+    return { headline: cleanHeadline, emphasis: cleanEmphasis };
+  }
   const without = cleanHeadline.replace(new RegExp(escaped, 'ig'), '').replace(/\s+/g, ' ').trim().replace(/[,:;.-]+$/,'');
   return { headline: `${without} ${cleanEmphasis}`.trim(), emphasis: cleanEmphasis };
 }
