@@ -88,6 +88,11 @@ async function scrapeAllReddit() {
 // ---------- Firecrawl scraping (optional enrichment) ----------
 
 async function tryFirecrawlScrape(url) {
+  if (process.env.FIRECRAWL_DISABLED === 'true') {
+    log(`Firecrawl disabled by FIRECRAWL_DISABLED=true; skipping ${url}`);
+    return null;
+  }
+
   try {
     const { stdout, stderr } = await execFileAsync('firecrawl', [
       'scrape', '--url', url, '--format', 'markdown',
