@@ -17,6 +17,8 @@ const {
   rejectDraft: rejectFacebookDraft,
   formatTelegramSchedule,
 } = require('./facebook-daily-cron');
+const { runMorningIntelBriefing } = require('./morning-briefing');
+const { sendDailyProjectState } = require('./daily-project-state');
 
 const MISSION_CONTROL_BOT_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN;
 const MISSION_CONTROL_CHAT_ID   = process.env.MISSION_CONTROL_CHAT_ID || '-5085897499';
@@ -649,17 +651,82 @@ if (!MISSION_CONTROL_BOT_TOKEN) {
   console.error('[peter-heartbeat] FATAL: MISSION_CONTROL_BOT_TOKEN not set, briefings and alerts will fail.');
 }
 
-const now    = new Date();
-const next8am = new Date();
-next8am.setHours(8, 0, 0, 0);
-if (next8am <= now) next8am.setDate(next8am.getDate() + 1);
-console.log('[heartbeat] Morning briefing scheduled in', Math.round((next8am - now) / 60000), 'minutes (at', next8am.toISOString() + ')');
-setTimeout(() => {
-  sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
-  setInterval(() => {
-    sendMorningBriefing().catch((err) => console.error('[heartbeat] Morning briefing uncaught error:', err.message));
-  }, 24 * 60 * 60 * 1000);
-}, next8am - now);
+function getNextUkDailyRun(hour, minute, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(now).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  const ukNowAsUtc = new Date(Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  ));
+  const ukTargetAsUtc = new Date(Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    hour,
+    minute,
+    0,
+  ));
+  if (ukTargetAsUtc <= ukNowAsUtc) ukTargetAsUtc.setUTCDate(ukTargetAsUtc.getUTCDate() + 1);
+  return new Date(now.getTime() + (ukTargetAsUtc - ukNowAsUtc));
+}
+
+function scheduleDailyUkJob({ label, hour, minute, job }) {
+  const scheduleNext = () => {
+    const next = getNextUkDailyRun(hour, minute);
+    const delay = Math.max(1000, next - new Date());
+    console.log(`[${label}] Scheduled in ${Math.round(delay / 60000)} minutes (at ${next.toISOString()}, ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} Europe/London)`);
+    setTimeout(async () => {
+      try {
+        await job();
+      } catch (err) {
+        console.error(`[${label}] uncaught error:`, err.message);
+      } finally {
+        scheduleNext();
+      }
+    }, delay);
+  };
+  scheduleNext();
+}
+
+scheduleDailyUkJob({
+  label: 'heartbeat-morning-briefing',
+  hour: 8,
+  minute: 0,
+  job: sendMorningBriefing,
+});
+
+scheduleDailyUkJob({
+  label: 'morning-intel-briefing',
+  hour: 7,
+  minute: 30,
+  job: async () => {
+    const result = await runMorningIntelBriefing();
+    console.log(`[morning-intel-briefing] completed sent=${result.sent}`);
+  },
+});
+
+scheduleDailyUkJob({
+  label: 'daily-project-state',
+  hour: 23,
+  minute: 0,
+  job: sendDailyProjectState,
+});
 
 runHeartbeat();
 setInterval(runHeartbeat, 5 * 60 * 1000);
