@@ -1,38 +1,38 @@
 {
-  "date": "2026-04-23",
+  "date": "2026-04-24",
   "trendingTopics": [
-    "Cleaner keeps bringing her dog… and it pees inside",
     "VRBO Listing Totals Misleading",
+    "New listing, no reviews, new host [Mexico]",
     "I got tired of calculating exact net payouts (Airbnb 15.5%, VRBO, Booking.com), so I built a free tool.",
-    "Host refusing to honor reservation but won’t cancel? [US]",
-    "Soap dispensers or individual sized soaps?",
     "No king size bed even though the listing said so",
-    "Can a host charge a cleaning fee after booking? [US]",
-    "How do you handle returning guests? [CA]"
+    "Guest asking for extra keys for their friend",
+    "Will I be wrong to rate my stay 4 stars? [France]",
+    "Guests Claim AC Not Working, Left and Demand Refund",
+    "Traveller- staying for surgery, found lots of mould in the bathroom?"
   ],
   "hostPainPoints": [
     "Host is asking me to cancel",
     "Host submitted a damage claim for damage we did NOT do!",
-    "Accused of property damage by host - they want to charge me 1.2k euro [Italy]",
-    "Host offers to cancel booking and arrange the stay privately; is this a scam? [US]",
-    "No one wants my money"
+    "No one wants my money",
+    "Soap dispensers or individual sized soaps?",
+    "Rental car broken into, all backpacks stolen, need to cancel Airbnb — any chance of refund? [EU]"
   ],
   "viralAngles": [
-    "Host is asking me to cancel (361 upvotes, r/vrbo)",
-    "Host submitted a damage claim for damage we did NOT do! (88 upvotes, r/vrbo)",
-    "Cleaner keeps bringing her dog… and it pees inside (68 upvotes, r/airbnb_hosts)"
+    "Host is asking me to cancel (371 upvotes, r/vrbo)",
+    "Host submitted a damage claim for damage we did NOT do! (94 upvotes, r/vrbo)",
+    "No one wants my money (28 upvotes, r/vrbo)"
   ],
   "seasonalContext": "Early April — spring demand building, Easter holiday bookings, key period for listing refresh before summer peak.",
   "suggestedPostAngles": [
     "Address host concern: \"Host is asking me to cancel\"",
     "Address host concern: \"Host submitted a damage claim for damage we did NOT do!\"",
-    "Address host concern: \"Accused of property damage by host - they want to charge me 1.2k euro [Italy]\"",
+    "Address host concern: \"No one wants my money\"",
     "React to trending thread: Host is asking me to cancel",
     "React to trending thread: Host submitted a damage claim for damage we did NOT do!",
     "Why most UK Airbnb hosts are leaving money on the table with their title"
   ],
   "_meta": {
-    "redditPostsScraped": 40,
+    "redditPostsScraped": 33,
     "airbnbTopicsFound": 0,
     "bpTopicsFound": 0,
     "totalTopics": 13

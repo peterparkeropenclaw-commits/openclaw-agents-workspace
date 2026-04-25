@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-04-22T07:00:00.000Z",
+  "date": "2026-04-22",
+  "copyReference": "/Users/robotmac/.openclaw/workspace/memory/DES-207-facebook-copy-deck/str-clinic-facebook-post-copy-deck.md",
+  "brandReference": "/Users/robotmac/.openclaw/workspace/design-references/str-clinic/STR-CLINIC-DESIGN-DOCTRINE.md",
+  "creativeSources": [
+    {
+      "id": "amenity-proof-2026-04-22",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-205-facebook-public-assets/des-205-post-01-positioning-before-price.png",
+      "creativeTemplateId": "creative-01"
+    },
+    {
+      "id": "photo-sequence-2026-04-22",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-02-photo-order-trust-rebuild.png",
+      "creativeTemplateId": "creative-02"
+    },
+    {
+      "id": "shoulder-season-2026-04-22",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-03-full-calendar-right-reasons-rebuild.png",
+      "creativeTemplateId": "creative-03"
+    }
+  ],
+  "duplicateAvoidance": {
+    "historyFile": "output/facebook-packs-test/generation-history.json",
+    "rotationWindowDays": 21,
+    "textHashes": [
+      {
+        "topicId": "amenity-proof",
+        "textHash": "fac46312244a36d5d5368c0b5b4bbc80322c63ad"
+      },
+      {
+        "topicId": "photo-sequence",
+        "textHash": "f5278b6098b1426d93bd23f398a3abed3259e266"
+      },
+      {
+        "topicId": "shoulder-season",
+        "textHash": "44d80f54c4b2f9ff3cd7f94083baf8d33375e235"
+      }
+    ]
+  },
+  "checksum": "7b76233ae987e3a1bce59015166bdc058bde6d46"
+}

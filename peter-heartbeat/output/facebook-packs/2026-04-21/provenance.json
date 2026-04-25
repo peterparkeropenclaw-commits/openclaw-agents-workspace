@@ -1,0 +1,42 @@
+{
+  "generatedAt": "2026-04-21T08:01:15.832Z",
+  "date": "2026-04-21",
+  "copyReference": "/Users/robotmac/.openclaw/workspace/memory/DES-207-facebook-copy-deck/str-clinic-facebook-post-copy-deck.md",
+  "brandReference": "/Users/robotmac/.openclaw/workspace/design-references/str-clinic/STR-CLINIC-DESIGN-DOCTRINE.md",
+  "creativeSources": [
+    {
+      "id": "occupancy-margin-2026-04-21",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-205-facebook-public-assets/des-205-post-01-positioning-before-price.png",
+      "creativeTemplateId": "creative-01"
+    },
+    {
+      "id": "friction-removal-2026-04-21",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-02-photo-order-trust-rebuild.png",
+      "creativeTemplateId": "creative-02"
+    },
+    {
+      "id": "pricing-positioning-2026-04-21",
+      "source": "/Users/robotmac/.openclaw/workspace/memory/DES-206-posts-2-and-3-rebuild/des-206-post-03-full-calendar-right-reasons-rebuild.png",
+      "creativeTemplateId": "creative-03"
+    }
+  ],
+  "duplicateAvoidance": {
+    "historyFile": "/Users/robotmac/workspace/peter-heartbeat/output/facebook-packs/generation-history.json",
+    "rotationWindowDays": 21,
+    "textHashes": [
+      {
+        "topicId": "occupancy-margin",
+        "textHash": "c0a2bdbea8bcc639c248d73babe94ea048753d27"
+      },
+      {
+        "topicId": "friction-removal",
+        "textHash": "b4cc3dd3c966048d8716ca8c338286ef3efe72bb"
+      },
+      {
+        "topicId": "pricing-positioning",
+        "textHash": "a319c6a996689ef74c031ad7826b03a3523dd861"
+      }
+    ]
+  },
+  "checksum": "e5ee638c3f035bbbafb929608891d0de685290cb"
+}

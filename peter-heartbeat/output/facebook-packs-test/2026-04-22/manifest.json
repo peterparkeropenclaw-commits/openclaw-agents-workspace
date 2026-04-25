@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-04-22T07:00:00.000Z",
+  "timezone": "Europe/London",
+  "date": "2026-04-22",
+  "outputDir": "output/facebook-packs-test/2026-04-22",
+  "duplicateAvoidance": {
+    "mode": "topic-rotation-plus-text-hash-history",
+    "historyFile": "generation-history.json",
+    "consecutiveRunProtection": true
+  },
+  "creatives": {
+    "uniqueDailyCreatives": false,
+    "note": "Creatives are reused templates in this implementation. Copy generation is the unique-daily slice."
+  },
+  "posts": [
+    {
+      "index": 1,
+      "id": "amenity-proof-2026-04-22",
+      "topicId": "amenity-proof",
+      "title": "Amenities only help when the guest can feel them",
+      "textFile": "posts/01-amenity-proof.md",
+      "creativeFile": "creatives/01-pricing-vs-positioning.png",
+      "creativeTemplateId": "creative-01",
+      "hashtags": [
+        "#AirbnbAmenities",
+        "#UKHolidayLets",
+        "#HostTips",
+        "#ShortTermRental",
+        "#AirbnbMarketing",
+        "#STRClinic"
+      ],
+      "headline": "A long amenities list is not persuasive if the page does not show what the stay actually feels like.",
+      "textHash": "fac46312244a36d5d5368c0b5b4bbc80322c63ad"
+    },
+    {
+      "index": 2,
+      "id": "photo-sequence-2026-04-22",
+      "topicId": "photo-sequence",
+      "title": "The photo sequence is part of the sale",
+      "textFile": "posts/02-photo-sequence.md",
+      "creativeFile": "creatives/02-photo-order-builds-trust.png",
+      "creativeTemplateId": "creative-02",
+      "hashtags": [
+        "#AirbnbPhotos",
+        "#UKAirbnb",
+        "#ShortStayHost",
+        "#HolidayCottage",
+        "#AirbnbAdvice",
+        "#STRMarketing"
+      ],
+      "headline": "A strong lead image helps, but the next few frames decide whether trust keeps building.",
+      "textHash": "f5278b6098b1426d93bd23f398a3abed3259e266"
+    },
+    {
+      "index": 3,
+      "id": "shoulder-season-2026-04-22",
+      "topicId": "shoulder-season",
+      "title": "Shoulder season reveals how strong the listing really is",
+      "textFile": "posts/03-shoulder-season.md",
+      "creativeFile": "creatives/03-full-calendar-right-reasons.png",
+      "creativeTemplateId": "creative-03",
+      "hashtags": [
+        "#UKHosts",
+        "#ShoulderSeason",
+        "#AirbnbStrategy",
+        "#ShortTermRentalTips",
+        "#HolidayLet",
+        "#RevenueManagement"
+      ],
+      "headline": "When demand cools slightly, weak positioning shows up much faster than hosts expect.",
+      "textHash": "44d80f54c4b2f9ff3cd7f94083baf8d33375e235"
+    }
+  ]
+}

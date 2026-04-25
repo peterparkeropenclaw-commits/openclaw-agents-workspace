@@ -435,6 +435,37 @@ function parseSimpleRescheduleTime(input, now = new Date()) {
   return null;
 }
 
+async function processAuditCallback(callback) {
+  if (!callback?.data) return { ok: true, ignored: true };
+  const parts = String(callback.data).split(':');
+  if (parts[0] !== 'audit' || parts.length < 3) return { ok: true, ignored: true };
+  const auditId = parts[1];
+  const action = parts[2];
+
+  console.log(`[audit callback] received: auditId=${auditId} action=${action}`);
+  await answerTelegramCallback(callback.id, action === 'approve' ? 'Approving...' : 'Rejecting...');
+
+  try {
+    const authToken = process.env.TRIGGER_AUTH_TOKEN;
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const res = await fetch('http://localhost:3215/audit-approval', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ auditId, action }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      console.error(`[audit callback] webhook returned ${res.status}:`, data);
+      return { ok: false, error: data.error };
+    }
+    return { ok: true, action, auditId };
+  } catch (err) {
+    console.error('[audit callback] POST to webhook failed:', err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
 async function processFacebookCallback(callback) {
   if (!callback?.data) return { ok: true, ignored: true };
   const parts = String(callback.data).split(':');
@@ -575,7 +606,11 @@ async function processCustomTimeReply(message) {
 }
 
 async function handleTelegramUpdate(update) {
-  if (update.callback_query) return processFacebookCallback(update.callback_query);
+  if (update.callback_query) {
+    const data = String(update.callback_query?.data || '');
+    if (data.startsWith('audit:')) return processAuditCallback(update.callback_query);
+    return processFacebookCallback(update.callback_query);
+  }
   if (update.message?.text) {
     const handledCustom = await processCustomTimeReply(update.message);
     if (handledCustom) return { ok: true, handled: true };

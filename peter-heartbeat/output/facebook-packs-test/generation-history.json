@@ -1,0 +1,56 @@
+{
+  "generated": [
+    {
+      "date": "2026-04-22",
+      "generatedAt": "2026-04-22T07:00:00.000Z",
+      "packDir": "output/facebook-packs-test/2026-04-22",
+      "checksum": "7b76233ae987e3a1bce59015166bdc058bde6d46",
+      "posts": [
+        {
+          "topicId": "amenity-proof",
+          "title": "Amenities only help when the guest can feel them",
+          "textHash": "fac46312244a36d5d5368c0b5b4bbc80322c63ad",
+          "creativeTemplateId": "creative-01"
+        },
+        {
+          "topicId": "photo-sequence",
+          "title": "The photo sequence is part of the sale",
+          "textHash": "f5278b6098b1426d93bd23f398a3abed3259e266",
+          "creativeTemplateId": "creative-02"
+        },
+        {
+          "topicId": "shoulder-season",
+          "title": "Shoulder season reveals how strong the listing really is",
+          "textHash": "44d80f54c4b2f9ff3cd7f94083baf8d33375e235",
+          "creativeTemplateId": "creative-03"
+        }
+      ]
+    },
+    {
+      "date": "2026-04-21",
+      "generatedAt": "2026-04-21T07:00:00.000Z",
+      "packDir": "output/facebook-packs-test/2026-04-21",
+      "checksum": "ff24b2723e21413224e58724f726d96b8b3fb4b5",
+      "posts": [
+        {
+          "topicId": "occupancy-margin",
+          "title": "A full calendar is not the whole scorecard",
+          "textHash": "c0a2bdbea8bcc639c248d73babe94ea048753d27",
+          "creativeTemplateId": "creative-01"
+        },
+        {
+          "topicId": "friction-removal",
+          "title": "Small bits of friction quietly cost bookings",
+          "textHash": "b4cc3dd3c966048d8716ca8c338286ef3efe72bb",
+          "creativeTemplateId": "creative-02"
+        },
+        {
+          "topicId": "pricing-positioning",
+          "title": "Price pressure usually starts upstream",
+          "textHash": "a319c6a996689ef74c031ad7826b03a3523dd861",
+          "creativeTemplateId": "creative-03"
+        }
+      ]
+    }
+  ]
+}

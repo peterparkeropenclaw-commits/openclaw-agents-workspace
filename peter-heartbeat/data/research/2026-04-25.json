@@ -1,0 +1,41 @@
+{
+  "date": "2026-04-25",
+  "trendingTopics": [
+    "Every guest requests early check-in and tries to stay later than check-out. How to manage this without over explaining.",
+    "Airbnb charging 15.5% on cleaning fees expense",
+    "Feeling anxious about my very first guests at my new Airbnb. Am I overthinking",
+    "Did the math on what Airbnb fees are actually costing me, now looking at direct booking",
+    "Extra Charge for Heated Pool",
+    "Airbnb during FIFA Kansas City",
+    "What's the real cost of a single bad review on Airbnb?",
+    "Paid $6K for STR “optimization” nothing done yet—ask for refund?",
+    "Ask about your listing",
+    "Advice on your space"
+  ],
+  "hostPainPoints": [
+    "Guest wants to cancel after telling him Owner lives in the House",
+    "First (Seriously) Bad Guest",
+    "Help me pick a place",
+    "Hosts claiming bonkers \"damages\" for normal wear and tear / cleaning [Guest]",
+    "Nightly \"Support Calls\" from Airbnb coming at 1am and 3am [Spain]"
+  ],
+  "viralAngles": [
+    "Every guest requests early check-in and tries to stay later than check-out. How to manage this without over explaining. (177 upvotes, r/airbnb_hosts)",
+    "Extra Charge for Heated Pool (49 upvotes, r/airbnb_hosts)"
+  ],
+  "seasonalContext": "Early April — spring demand building, Easter holiday bookings, key period for listing refresh before summer peak.",
+  "suggestedPostAngles": [
+    "Address host concern: \"Guest wants to cancel after telling him Owner lives in the House\"",
+    "Address host concern: \"First (Seriously) Bad Guest\"",
+    "Address host concern: \"Help me pick a place\"",
+    "React to trending thread: Every guest requests early check-in and tries to stay later than check-out. How ",
+    "React to trending thread: Extra Charge for Heated Pool",
+    "Why most UK Airbnb hosts are leaving money on the table with their title"
+  ],
+  "_meta": {
+    "redditPostsScraped": 36,
+    "airbnbTopicsFound": 9,
+    "bpTopicsFound": 7,
+    "totalTopics": 15
+  }
+}

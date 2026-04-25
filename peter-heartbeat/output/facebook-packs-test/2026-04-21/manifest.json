@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-04-21T07:00:00.000Z",
+  "timezone": "Europe/London",
+  "date": "2026-04-21",
+  "outputDir": "output/facebook-packs-test/2026-04-21",
+  "duplicateAvoidance": {
+    "mode": "topic-rotation-plus-text-hash-history",
+    "historyFile": "generation-history.json",
+    "consecutiveRunProtection": true
+  },
+  "creatives": {
+    "uniqueDailyCreatives": false,
+    "note": "Creatives are reused templates in this implementation. Copy generation is the unique-daily slice."
+  },
+  "posts": [
+    {
+      "index": 1,
+      "id": "occupancy-margin-2026-04-21",
+      "topicId": "occupancy-margin",
+      "title": "A full calendar is not the whole scorecard",
+      "textFile": "posts/01-occupancy-margin.md",
+      "creativeFile": "creatives/01-pricing-vs-positioning.png",
+      "creativeTemplateId": "creative-01",
+      "hashtags": [
+        "#AirbnbHosting",
+        "#UKHolidayLets",
+        "#RevenueStrategy",
+        "#ShortTermRentalTips",
+        "#AirbnbBusiness",
+        "#HostEducation"
+      ],
+      "headline": "Occupancy can look healthy while margin and positioning quietly leak underneath it.",
+      "textHash": "c0a2bdbea8bcc639c248d73babe94ea048753d27"
+    },
+    {
+      "index": 2,
+      "id": "friction-removal-2026-04-21",
+      "topicId": "friction-removal",
+      "title": "Small bits of friction quietly cost bookings",
+      "textFile": "posts/02-friction-removal.md",
+      "creativeFile": "creatives/02-photo-order-builds-trust.png",
+      "creativeTemplateId": "creative-02",
+      "hashtags": [
+        "#AirbnbTips",
+        "#UKHosts",
+        "#HolidayLetAdvice",
+        "#STRMarketing",
+        "#GuestJourney",
+        "#AirbnbListing"
+      ],
+      "headline": "Guests rarely announce confusion. They usually just leave the listing and compare something simpler.",
+      "textHash": "b4cc3dd3c966048d8716ca8c338286ef3efe72bb"
+    },
+    {
+      "index": 3,
+      "id": "pricing-positioning-2026-04-21",
+      "topicId": "pricing-positioning",
+      "title": "Price pressure usually starts upstream",
+      "textFile": "posts/03-pricing-positioning.md",
+      "creativeFile": "creatives/03-full-calendar-right-reasons.png",
+      "creativeTemplateId": "creative-03",
+      "hashtags": [
+        "#AirbnbHost",
+        "#UKHosts",
+        "#ShortTermRental",
+        "#HolidayLet",
+        "#STRStrategy",
+        "#AirbnbTips"
+      ],
+      "headline": "Hosts often react to weak demand at the price layer when the issue started earlier.",
+      "textHash": "a319c6a996689ef74c031ad7826b03a3523dd861"
+    }
+  ]
+}

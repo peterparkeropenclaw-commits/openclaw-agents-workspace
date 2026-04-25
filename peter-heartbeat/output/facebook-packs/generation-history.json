@@ -1,0 +1,30 @@
+{
+  "generated": [
+    {
+      "date": "2026-04-21",
+      "generatedAt": "2026-04-21T08:01:15.832Z",
+      "packDir": "/Users/robotmac/workspace/peter-heartbeat/output/facebook-packs/2026-04-21",
+      "checksum": "e5ee638c3f035bbbafb929608891d0de685290cb",
+      "posts": [
+        {
+          "topicId": "occupancy-margin",
+          "title": "A full calendar is not the whole scorecard",
+          "textHash": "c0a2bdbea8bcc639c248d73babe94ea048753d27",
+          "creativeTemplateId": "creative-01"
+        },
+        {
+          "topicId": "friction-removal",
+          "title": "Small bits of friction quietly cost bookings",
+          "textHash": "b4cc3dd3c966048d8716ca8c338286ef3efe72bb",
+          "creativeTemplateId": "creative-02"
+        },
+        {
+          "topicId": "pricing-positioning",
+          "title": "Price pressure usually starts upstream",
+          "textHash": "a319c6a996689ef74c031ad7826b03a3523dd861",
+          "creativeTemplateId": "creative-03"
+        }
+      ]
+    }
+  ]
+}
