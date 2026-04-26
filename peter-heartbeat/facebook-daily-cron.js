@@ -47,6 +47,12 @@ const BLOCKED_PATTERNS = [
 ];
 const VALID_STATUSES = new Set(['draft', 'pending_approval', 'approved', 'scheduled', 'published', 'failed', 'rejected']);
 
+function envFlag(name, defaultValue = false) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
+}
+
 function londonDateParts(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -128,7 +134,7 @@ function buildFullHashtags(post) {
   return combined.join(' ');
 }
 
-function createDraftRecord({ text, image_path = null, status = 'draft', scheduled_publish_time = null, label = null, post_index = null, total_posts = null }) {
+function createDraftRecord({ text, image_path = null, status = 'draft', scheduled_publish_time = null, label = null, post_index = null, total_posts = null, scheduled_via = null }) {
   if (!VALID_STATUSES.has(status)) throw new Error(`Invalid draft status: ${status}`);
   const timestamp = Date.now();
   return {
@@ -140,6 +146,7 @@ function createDraftRecord({ text, image_path = null, status = 'draft', schedule
     label: label || null,
     post_index: post_index || null,
     total_posts: total_posts || null,
+    scheduled_via: scheduled_via || null,
     created_at: timestamp,
     approved_at: null,
     published_at: null,
@@ -180,6 +187,24 @@ function nextCadenceSlot(baseTimeMs = Date.now(), cadenceHours = Number(process.
   next.setMinutes(0, 0, 0);
   if (next.getTime() <= baseTimeMs) next.setTime(baseTimeMs + intervalMs);
   return next;
+}
+
+function firstSchedulableSlot(baseTimeMs = Date.now(), minLeadSeconds = 10 * 60) {
+  const minTimeMs = baseTimeMs + (Math.max(10 * 60, Number(minLeadSeconds) || 10 * 60) * 1000);
+  const slot = new Date(minTimeMs);
+  slot.setSeconds(0, 0);
+  const minutes = slot.getMinutes();
+  const roundedMinutes = Math.ceil(minutes / 5) * 5;
+  if (roundedMinutes >= 60) {
+    slot.setHours(slot.getHours() + 1, 0, 0, 0);
+  } else {
+    slot.setMinutes(roundedMinutes, 0, 0);
+  }
+  return slot;
+}
+
+function autoScheduleCadenceHours() {
+  return Math.max(1, Number(process.env.FACEBOOK_AUTO_SCHEDULE_CADENCE_HOURS || 3));
 }
 
 function draftTextFromPost(post) {
@@ -769,6 +794,7 @@ async function approveDraft(draftId, { action, scheduled_time }) {
     const result = await scheduleDraftOnFacebook(draft, pageToken, scheduled_time);
     draft.status = 'scheduled';
     draft.scheduled_publish_time = scheduled_time;
+    draft.scheduled_via = 'manual';
     draft.facebook_post_id = result.post_id || result.id || null;
     draft.publish_error = null;
     saveDraft(draft);
@@ -799,7 +825,8 @@ async function createDraftBatch({ count = 10, posts: providedPosts = null, packD
   const resolvedPackDir = providedPackDir || path.join(OUTPUT_ROOT, londonDateParts().isoDate);
 
   const scheduled = [];
-  let slot = nextCadenceSlot();
+  let slot = firstSchedulableSlot();
+  const cadenceHours = autoScheduleCadenceHours();
   for (const post of posts) {
     const draftText = draftTextFromPost(post);
     validateDraftContent(draftText);
@@ -811,6 +838,7 @@ async function createDraftBatch({ count = 10, posts: providedPosts = null, packD
       image_path: imagePath,
       status: 'pending_approval',
       scheduled_publish_time: Math.floor(slot.getTime() / 1000),
+      scheduled_via: null,
       label: deriveLabelFromPost(post),
       post_index: post.index,
       total_posts: posts.length,
@@ -819,7 +847,7 @@ async function createDraftBatch({ count = 10, posts: providedPosts = null, packD
     logFb(`Draft validation passed: ${draft.id}`);
     logFb(`Draft created: ${draft.id} scheduled for ${slot.toISOString()}`);
     scheduled.push(draft);
-    slot = new Date(slot.getTime() + Math.max(1, Number(process.env.FACEBOOK_POST_CADENCE_HOURS || 8)) * 60 * 60 * 1000);
+    slot = new Date(slot.getTime() + cadenceHours * 60 * 60 * 1000);
   }
   if (scheduled.length) logFb(`Generated ${scheduled.length} drafts, scheduled from ${new Date(scheduled[0].scheduled_publish_time * 1000).toISOString()} to ${new Date(scheduled[scheduled.length - 1].scheduled_publish_time * 1000).toISOString()}`);
   return scheduled;
@@ -907,6 +935,62 @@ async function sendDraftApprovals(drafts) {
   }
 }
 
+async function autoScheduleDrafts(drafts) {
+  if (!Array.isArray(drafts) || drafts.length === 0) {
+    return { scheduled: [], failures: [] };
+  }
+
+  const pageToken = await getPageAccessToken();
+  const scheduled = [];
+  const failures = [];
+
+  for (const draft of drafts) {
+    try {
+      requireFutureScheduledTime(draft.scheduled_publish_time);
+      const result = await scheduleDraftOnFacebook(draft, pageToken, draft.scheduled_publish_time);
+      draft.status = 'scheduled';
+      draft.scheduled_via = 'auto';
+      draft.facebook_post_id = result.post_id || result.id || null;
+      draft.publish_error = null;
+      saveDraft(draft);
+      scheduled.push(draft);
+      logFb(`Auto-schedule succeeded: ${draft.id} scheduled_for=${new Date(draft.scheduled_publish_time * 1000).toISOString()}`);
+    } catch (error) {
+      draft.status = 'failed';
+      draft.scheduled_via = 'auto';
+      draft.publish_error = error.message;
+      saveDraft(draft);
+      failures.push({
+        id: draft.id,
+        label: draft.label || `Post ${draft.post_index || '?'}`,
+        scheduled_publish_time: draft.scheduled_publish_time,
+        error: error.message,
+      });
+      logFb(`Auto-schedule failed: ${draft.id} error=${error.message}`);
+    }
+  }
+
+  return { scheduled, failures };
+}
+
+function buildAutoScheduleSummary({ isoDate, driveUrl, drafts, scheduled, failures }) {
+  const firstScheduled = scheduled[0]?.scheduled_publish_time;
+  const lastScheduled = scheduled[scheduled.length - 1]?.scheduled_publish_time;
+  const lines = [
+    `📱 Facebook auto-scheduled — ${isoDate}`,
+    '',
+    `Drive folder: ${driveUrl}`,
+    `Scheduled successfully: ${scheduled.length}/${drafts.length}`,
+    `First scheduled: ${formatTelegramSchedule(firstScheduled)}`,
+    `Last scheduled: ${formatTelegramSchedule(lastScheduled)}`,
+  ];
+  if (failures.length) {
+    lines.push('', 'Failures:');
+    failures.forEach((failure) => lines.push(`• ${failure.label}: ${failure.error}`));
+  }
+  return lines.join('\n');
+}
+
 function rejectDraft(draftId) {
   const draft = loadDraft(draftId);
   draft.status = 'rejected';
@@ -980,17 +1064,46 @@ async function run({ manual = false, generateBatch = true } = {}) {
 
   const drafts = generateBatch ? await createDraftBatch({ count: Math.min(10, posts.length), posts, packDir }) : [];
   const driveUrl = await uploadPack(packDir, isoDate);
-  // Send summary notification first
-  const telegramMessage = `📱 Facebook posts ready — ${isoDate}\n\nDrive folder: ${driveUrl}\n\n${drafts.length} posts below — approve each individually.`;
+  const autoScheduleEnabled = !manual && envFlag('FACEBOOK_AUTO_SCHEDULE', true);
+  let autoScheduleResult = { scheduled: [], failures: [] };
+  let telegramMessage;
+
+  if (autoScheduleEnabled) {
+    autoScheduleResult = await autoScheduleDrafts(drafts);
+    telegramMessage = buildAutoScheduleSummary({
+      isoDate,
+      driveUrl,
+      drafts,
+      scheduled: autoScheduleResult.scheduled,
+      failures: autoScheduleResult.failures,
+    });
+  } else {
+    telegramMessage = `📱 Facebook posts ready — ${isoDate}
+
+Drive folder: ${driveUrl}
+
+${drafts.length} posts below — approve each individually.`;
+  }
+
   const telegram = await sendTelegram(telegramMessage, {
     token: process.env.MISSION_CONTROL_BOT_TOKEN,
     chatId: process.env.MISSION_CONTROL_CHAT_ID || '-5085897499',
   });
 
-  // Send per-post approval messages
-  await sendDraftApprovals(drafts);
+  if (!autoScheduleEnabled) await sendDraftApprovals(drafts);
 
-  return { date: isoDate, packDir, driveUrl, telegramOk: telegram.ok, source, posts, drafts, telegramMessage };
+  return {
+    date: isoDate,
+    packDir,
+    driveUrl,
+    telegramOk: telegram.ok,
+    source,
+    posts,
+    drafts,
+    telegramMessage,
+    autoScheduleEnabled,
+    autoScheduleResult,
+  };
 }
 
 function scheduleDailyFacebookCronJob({ logger = console } = {}) {
@@ -1040,7 +1153,8 @@ function formatTelegramSchedule(unixTime) {
 }
 
 if (require.main === module) {
-  run({ manual: process.argv.includes('--run-now') })
+  const manual = process.argv.includes('--manual-approval') || process.argv.includes('--manual');
+  run({ manual })
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => { console.error(error.stack || error.message); process.exit(1); });
 }
