@@ -3,25 +3,12 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-
-const execFileAsync = promisify(execFile);
+const { hasUsableArtifact, loadBestMorningIntelArtifact, runMorningIntelResearch } = require('./lib/morning-intel-researcher');
 
 const TELEGRAM_TOKEN = process.env.MISSION_CONTROL_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || process.env.PETER_TELEGRAM_TOKEN;
 // TODO: Wire this to the Mission Control group ID if MISSION_CONTROL_CHAT_ID/TELEGRAM_GROUP_ID is absent.
 const TELEGRAM_CHAT_ID = process.env.MISSION_CONTROL_CHAT_ID || process.env.TELEGRAM_GROUP_ID || process.env.BRANDON_CHAT_ID || '5821364140';
 const MAX_MESSAGE_LENGTH = 3000;
-
-const TOPICS = [
-  'Airbnb host platform update 2026',
-  'short term rental optimization tools 2026',
-  'OpenClaw AI agent updates',
-  'Claude AI model update 2026',
-  'ChatGPT model update 2026',
-  'GLM AI model 2026',
-  'Airbnb host tips trending UK 2026',
-];
 
 const FEATURE_RECOMMENDATIONS = [
   "Add a 'Guest Origin Map' section showing where bookings typically come from for this property type and region",
@@ -51,6 +38,18 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function formatSource(item) {
+  let source = item?.source;
+  if (!source && item?.url) {
+    try {
+      source = new URL(String(item.url)).hostname.replace(/^www\./, '');
+    } catch (_) {
+      source = '';
+    }
+  }
+  return source ? ` (${escapeHtml(compact(source, 45))})` : '';
 }
 
 function stripHtml(text) {
@@ -90,51 +89,22 @@ function getFeatureRecommendation(date = new Date()) {
   return FEATURE_RECOMMENDATIONS[((weekIndex * 7) + dayOfWeekIndex) % FEATURE_RECOMMENDATIONS.length];
 }
 
-async function isFirecrawlAvailable() {
-  if (String(process.env.FIRECRAWL_DISABLED || '').toLowerCase() === 'true') return false;
-  try {
-    await execFileAsync('firecrawl', ['--version'], { timeout: 10_000 });
-    return true;
-  } catch (error) {
-    console.error('[morning-briefing] firecrawl unavailable:', error.message);
-    return false;
+async function collectNews({ date = new Date(), refresh = true } = {}) {
+  if (refresh) {
+    try {
+      const { artifact, outPath } = await runMorningIntelResearch({ date });
+      if (hasUsableArtifact(artifact)) return { unavailable: false, fresh: true, artifact, artifactPath: outPath };
+    } catch (error) {
+      console.error('[morning-briefing] direct research failed:', error.message);
+    }
   }
-}
 
-function normalizeSearchPayload(stdout) {
-  const parsed = JSON.parse(stdout);
-  if (Array.isArray(parsed)) return parsed;
-  if (Array.isArray(parsed.data)) return parsed.data;
-  if (Array.isArray(parsed.results)) return parsed.results;
-  if (parsed.data && Array.isArray(parsed.data.results)) return parsed.data.results;
-  return [];
-}
-
-async function searchTopic(topic) {
-  const args = ['search', topic, '--limit', '3', '--sources', 'news,web', '--tbs', 'qdr:w', '--country', 'GB', '--json'];
-  try {
-    const { stdout } = await execFileAsync('firecrawl', args, { timeout: 75_000, maxBuffer: 1024 * 1024 });
-    return normalizeSearchPayload(stdout).slice(0, 3).map((item) => ({
-      title: compact(item.title || item.name || item.url || 'Untitled result', 90),
-      summary: compact(item.description || item.snippet || item.markdown || item.content || 'No summary available.', 150),
-      url: item.url || item.link || '',
-    })).filter((item) => item.url || item.title);
-  } catch (error) {
-    console.error(`[morning-briefing] search failed for ${topic}:`, error.message);
-    return [];
+  const loaded = loadBestMorningIntelArtifact({ date });
+  if (loaded && hasUsableArtifact(loaded.artifact)) {
+    return { unavailable: false, fresh: loaded.fresh, artifact: loaded.artifact, artifactPath: loaded.path };
   }
-}
 
-async function collectNews() {
-  const available = await isFirecrawlAvailable();
-  if (!available) return { disabled: true, results: [] };
-
-  const results = [];
-  for (const topic of TOPICS) {
-    const items = await searchTopic(topic);
-    results.push({ topic, items });
-  }
-  return { disabled: false, results };
+  return { unavailable: true, reason: 'No usable local Morning Intel artifact is available.' };
 }
 
 function buildBrief({ news, date = new Date() }) {
@@ -144,23 +114,50 @@ function buildBrief({ news, date = new Date() }) {
     '',
   ];
 
-  if (news.disabled) {
-    lines.push('🗞 <b>News scan</b>');
-    lines.push('Firecrawl search is currently disabled or unavailable, so news sections were skipped.');
+  lines.push('🗞 <b>Agent-led web research</b>');
+  if (news.unavailable) {
+    lines.push(`Morning Intel is unavailable: ${escapeHtml(news.reason || 'no usable local research artifact was found')}`);
     lines.push('');
   } else {
-    lines.push('🗞 <b>News scan</b>');
-    for (const { topic, items } of news.results) {
-      lines.push(`\n<b>${escapeHtml(topic)}</b>`);
-      if (!items.length) {
-        lines.push('• No strong recent result found.');
-        continue;
+    if (!news.fresh) lines.push('<i>Using best available saved research artifact because fresh research was unavailable.</i>');
+
+    const takeaways = Array.isArray(news.artifact.takeaways) ? news.artifact.takeaways.slice(0, 3) : [];
+    if (takeaways.length) {
+      lines.push('<b>Top signals</b>');
+      for (const takeaway of takeaways) lines.push(`• ${escapeHtml(compact(takeaway, 180))}`);
+    }
+
+    let renderedResearchItems = 0;
+    const seenResearchKeys = new Set();
+    for (const section of (news.artifact.sections || []).slice(0, 3)) {
+      const items = Array.isArray(section.items) ? section.items : [];
+      const renderedItems = [];
+      for (const item of items) {
+        const key = (item.url || item.title || '').toLowerCase().replace(/\W+/g, ' ').slice(0, 80);
+        if (key && seenResearchKeys.has(key)) continue;
+        if (key) seenResearchKeys.add(key);
+        renderedItems.push(item);
+        if (renderedItems.length >= 2) break;
       }
-      for (const item of items.slice(0, 3)) {
-        const title = escapeHtml(item.title);
-        const summary = escapeHtml(item.summary);
-        const url = escapeHtml(item.url);
-        lines.push(`• <b>${title}</b> — ${summary}${url ? `\n  ${url}` : ''}`);
+      if (!renderedItems.length) continue;
+      lines.push(`\n<b>${escapeHtml(section.title || section.id || 'Research section')}</b>`);
+      for (const item of renderedItems) {
+        const title = escapeHtml(compact(item.title || 'Untitled signal', 95));
+        const summary = escapeHtml(compact(item.summary || item.source || 'No summary available.', 150));
+        lines.push(`• <b>${title}</b> — ${summary}${formatSource(item)}`);
+        renderedResearchItems += 1;
+      }
+    }
+
+    if (!takeaways.length && renderedResearchItems === 0) lines.push('No strong web/news items were available in the saved artifact.');
+
+    const communitySignals = Array.isArray(news.artifact.communitySignals) ? news.artifact.communitySignals.slice(0, 2) : [];
+    if (communitySignals.length) {
+      lines.push('\n<b>Host community signals</b>');
+      for (const item of communitySignals) {
+        const title = escapeHtml(compact(item.title || 'Untitled community signal', 95));
+        const summary = escapeHtml(compact(item.summary || item.source || 'No summary available.', 130));
+        lines.push(`• <b>${title}</b> — ${summary}${formatSource(item)}`);
       }
     }
     lines.push('');
@@ -226,7 +223,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  TOPICS,
   FEATURE_RECOMMENDATIONS,
   buildBrief,
   collectNews,

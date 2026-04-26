@@ -6,8 +6,6 @@
  *
  * Sources:
  *   1. Reddit JSON API — r/airbnb, r/airbnb_hosts, r/ShortTermRentals, r/vrbo
- *   2. Airbnb Community Centre (via Firecrawl if available)
- *   3. BiggerPockets STR forum (via Firecrawl if available)
  *
  * On any failure: logs the error and returns an empty/partial brief.
  * Never throws.
@@ -15,10 +13,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
-
-const execFileAsync = promisify(execFile);
 const RESEARCH_DIR = path.join(__dirname, '..', 'data', 'research');
 
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
@@ -85,56 +79,6 @@ async function scrapeAllReddit() {
   return results;
 }
 
-// ---------- Firecrawl scraping (optional enrichment) ----------
-
-async function tryFirecrawlScrape(url) {
-  if (process.env.FIRECRAWL_DISABLED === 'true') {
-    log(`Firecrawl disabled by FIRECRAWL_DISABLED=true; skipping ${url}`);
-    return null;
-  }
-
-  try {
-    const { stdout, stderr } = await execFileAsync('firecrawl', [
-      'scrape', '--url', url, '--format', 'markdown',
-    ], { timeout: 30000, maxBuffer: 512 * 1024 });
-    if (stderr && stderr.toLowerCase().includes('error')) {
-      logErr(`Firecrawl stderr for ${url}`, stderr);
-      return null;
-    }
-    return stdout || null;
-  } catch (err) {
-    logErr(`Firecrawl scrape failed for ${url}`, err);
-    return null;
-  }
-}
-
-async function scrapeAirbnbCommunity() {
-  const content = await tryFirecrawlScrape('https://community.withairbnb.com/t5/Community-Center/ct-p/community-center');
-  if (!content) return [];
-  // Extract thread titles from markdown (lines with links or headings)
-  const lines = content.split('\n').filter((l) => l.trim().length > 20 && l.trim().length < 200);
-  const topics = lines
-    .filter((l) => /host|guest|listing|booking|review|pricing|policy|regulation|rule|tip|advice|problem|issue|support/i.test(l))
-    .slice(0, 10)
-    .map((l) => l.replace(/[#*[\]()>]/g, '').replace(/https?:\/\/\S+/g, '').trim())
-    .filter((l) => l.length > 10);
-  log(`Airbnb Community — ${topics.length} topics extracted`);
-  return topics;
-}
-
-async function scrapeBiggerPockets() {
-  const content = await tryFirecrawlScrape('https://www.biggerpockets.com/forums/21-short-term-and-vacation-rental-investing');
-  if (!content) return [];
-  const lines = content.split('\n').filter((l) => l.trim().length > 20 && l.trim().length < 200);
-  const topics = lines
-    .filter((l) => /host|rental|airbnb|vrbo|listing|income|revenue|permit|regulation|occupancy|pricing|guest/i.test(l))
-    .slice(0, 10)
-    .map((l) => l.replace(/[#*[\]()>]/g, '').replace(/https?:\/\/\S+/g, '').trim())
-    .filter((l) => l.length > 10);
-  log(`BiggerPockets — ${topics.length} topics extracted`);
-  return topics;
-}
-
 // ---------- Synthesis ----------
 
 const STR_PAIN_KEYWORDS = [
@@ -155,7 +99,7 @@ function scorePost(post) {
   return (post.score || 0) + (post.numComments || 0) * 3 + keywordHits * 50;
 }
 
-function extractTopics(redditPosts, airbnbTopics, bpTopics) {
+function extractTopics(redditPosts, airbnbTopics = [], bpTopics = []) {
   // Score and sort Reddit posts
   const scored = redditPosts
     .filter((p) => p.title && p.title.length > 10)
@@ -203,8 +147,10 @@ function extractTopics(redditPosts, airbnbTopics, bpTopics) {
 function deriveSeasonalContext() {
   const now = new Date();
   const month = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', month: 'long' }).format(now);
-  const monthNum = now.getMonth() + 1; // 1-indexed
-  if (monthNum >= 3 && monthNum <= 5) return `Early ${month} — spring demand building, Easter holiday bookings, key period for listing refresh before summer peak.`;
+  const day = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', day: '2-digit' }).format(now));
+  const monthNum = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', month: '2-digit' }).format(now));
+  const monthPhase = day <= 10 ? 'Early' : day <= 20 ? 'Mid' : 'Late';
+  if (monthNum >= 3 && monthNum <= 5) return `${monthPhase} ${month} — spring demand building, Easter holiday bookings, key period for listing refresh before summer peak.`;
   if (monthNum >= 6 && monthNum <= 8) return `${month} — peak summer season, high demand, competitive pricing environment, guest expectations elevated.`;
   if (monthNum >= 9 && monthNum <= 10) return `${month} — post-peak shoulder season, focus on occupancy maintenance and review accumulation before winter.`;
   if (monthNum >= 11 || monthNum === 1) return `${month} — low season, focus on positioning improvements, pricing strategy, and preparation for spring.`;
@@ -247,8 +193,8 @@ async function runMorningResearch() {
   log(`Starting morning research for ${date}`);
 
   let redditPosts = [];
-  let airbnbTopics = [];
-  let bpTopics = [];
+  const airbnbTopics = [];
+  const bpTopics = [];
 
   // Scrape Reddit (primary source — uses public JSON API, no auth)
   try {
@@ -256,19 +202,6 @@ async function runMorningResearch() {
     log(`Reddit total: ${redditPosts.length} posts across ${REDDIT_SUBREDDITS.length} subreddits`);
   } catch (err) {
     logErr('Reddit scraping failed', err);
-  }
-
-  // Optional: Firecrawl enrichment
-  try {
-    airbnbTopics = await scrapeAirbnbCommunity();
-  } catch (err) {
-    logErr('Airbnb Community scraping failed', err);
-  }
-
-  try {
-    bpTopics = await scrapeBiggerPockets();
-  } catch (err) {
-    logErr('BiggerPockets scraping failed', err);
   }
 
   const { trendingTopics, hostPainPoints, viralAngles } = extractTopics(redditPosts, airbnbTopics, bpTopics);
